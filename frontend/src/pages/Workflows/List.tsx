@@ -1,6 +1,7 @@
+import PageHeader from '../../components/PageHeader';
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Button, Space, Typography, message, Modal, Form, Input, Select,
+  Card, Button, Space, message, Modal, Form, Input, Select,
   Table, Tag, Popconfirm, Tooltip
 } from 'antd';
 import {
@@ -11,7 +12,7 @@ import { useNavigate } from 'react-router-dom';
 import request from '../../utils/request';
 import { useAuth } from '../../contexts/AuthContext';
 
-const { Title, Text } = Typography;
+
 const { Option } = Select;
 
 interface Workflow {
@@ -241,21 +242,12 @@ const WorkflowsList: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}>
-        <Title level={2} style={{ margin: 0 }}>工作流编排</Title>
-        <Text type="secondary">可视化设计和编排自动化工作流</Text>
-      </div>
-
-      <Card
-        extra={
-          isHR && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-              创建工作流
-            </Button>
-          )
-        }
-      >
+      <PageHeader title="工作流编排" description="连接招聘环节，构建可视化的自动化协作流程。" actions={
+        isHR && <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>创建工作流</Button>
+      } />
+      <Card>
         <Table
+          scroll={{ x: 850 }}
           columns={columns}
           dataSource={workflows}
           rowKey="id"

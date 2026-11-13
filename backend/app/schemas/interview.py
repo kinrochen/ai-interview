@@ -11,6 +11,7 @@ class InterviewBase(BaseModel):
     position_id: UUID
     interviewer: Optional[str] = None
     interview_time: Optional[datetime] = None
+    interview_end_time: Optional[datetime] = None
     panel_members: Optional[List[str]] = [] # List of user IDs for the panel (strings or UUIDs)
     round: Optional[int] = 1
     interview_type: Optional[str] = 'onsite'  # onsite, video, phone - 面试形式
@@ -27,6 +28,7 @@ class InterviewCreate(InterviewBase):
 class InterviewUpdate(BaseModel):
     interviewer: Optional[str] = None
     interview_time: Optional[datetime] = None
+    interview_end_time: Optional[datetime] = None
     status: Optional[InterviewStatus] = None
     result: Optional[InterviewResult] = None
     evaluation: Optional[str] = None

@@ -170,6 +170,8 @@ def delete_offer(
     if offer.status not in [OfferStatus.DRAFT, OfferStatus.WITHDRAWN]:
         raise HTTPException(status_code=400, detail="只能删除草稿或已撤回的Offer")
     
+    if offer.actual_onboarded_at:
+        raise HTTPException(409, "已登记实际入职，需保留招聘名额与离职记录")
     db.delete(offer)
     db.commit()
     return {"success": True, "message": "Offer已删除"}

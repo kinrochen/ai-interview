@@ -1,8 +1,16 @@
-import React, { useEffect, useState } from 'react';
-import { Table, Button, Space, message, Modal, Form, Input, Select, Tag, Tooltip, Typography, Drawer, Descriptions, Divider, Progress, Badge, Spin, Popconfirm } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, GlobalOutlined, StopOutlined, CopyOutlined, RobotOutlined, ThunderboltOutlined, DeleteFilled } from '@ant-design/icons';
+import PositionOperations from "../Recruitment/PositionOperations";
+import { Link } from "react-router-dom";
+import { useAuth } from "../../contexts/AuthContext";
+import PageHeader from '../../components/PageHeader';
+import React, { useEffect, useRef, useState } from 'react';
+import { useBeforeUnload, useSearchParams } from 'react-router-dom';
+import { Table, Button, Space, message, Modal, Form, Input, Select, Tag, Tooltip, Typography, Drawer, Descriptions, Divider, Progress, Badge, Alert } from 'antd';
+import { PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined, EyeOutlined, GlobalOutlined, StopOutlined, CopyOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import JDGeneratorModal from '../../components/JDGeneratorModal';
+import PositionFields from '../../components/PositionFields';
+import type { HiringManager, PositionFormValues } from '../../components/PositionFields';
+import { getErrorMessage } from '../../utils/errors';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -59,68 +67,129 @@ const positionTypeConfig: Record<string, { color: string; text: string }> = {
   internship: { color: 'green', text: '实习' },
 };
 
+const positiveInteger = (value: string | null, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 const PositionsList: React.FC = () => {
+  const { user } = useAuth();
   const [data, setData] = useState<Position[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isDrawerVisible, setIsDrawerVisible] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [viewingRecord, setViewingRecord] = useState<Position | null>(null);
-  const [form] = Form.useForm();
+  const [form] = Form.useForm<PositionFormValues>();
+  const jdGuidance = Form.useWatch('jd_guidance', form) || '';
   const [submitting, setSubmitting] = useState(false);
-  const [users, setUsers] = useState<any[]>([]);
+  const [users, setUsers] = useState<HiringManager[]>([]);
   const [jdModalVisible, setJdModalVisible] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
 
-  const [searchTitle, setSearchTitle] = useState<string>('');
-  const [searchStatus, setSearchStatus] = useState<string | undefined>(undefined);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const searchTitle = searchParams.get('title') || '';
+  const searchStatus = searchParams.get('status') || undefined;
+  const page = positiveInteger(searchParams.get('page'), 1);
+  const pageSize = Math.min(100, positiveInteger(searchParams.get('pageSize'), 10));
+  const [composing, setComposing] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [listError, setListError] = useState('');
+  const [operationError, setOperationError] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [batchBusy, setBatchBusy] = useState(false);
+  const saving = useRef(false);
+  const dirty = useRef(false);
+  const immediateSearch = useRef(false);
+  const fetchPositions = () => setRefreshKey((value) => value + 1);
+  useBeforeUnload((event) => {
+    if (isModalVisible && dirty.current) { event.preventDefault(); event.returnValue = ''; }
+  });
 
-  const fetchPositions = async () => {
-    setLoading(true);
-    try {
-      const res = await request.get('/positions', {
-          params: {
-              title: searchTitle,
-              status: searchStatus
-          }
-      });
-      setData(res);
-    } catch (error) {
-      message.error('获取岗位列表失败');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchUsers = async () => {
-    try {
-      const res = await request.get('/auth/users');
-      setUsers(res);
-    } catch (error) {
-      console.error('Failed to fetch users');
-    }
+  const updateFilters = (values: Record<string, string | undefined>) => {
+    setSelectedRowKeys([]);
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      for (const [key, value] of Object.entries(values)) {
+        if (value) next.set(key, value);
+        else next.delete(key);
+      }
+      if (!('page' in values)) next.set('page', '1');
+      return next;
+    }, { replace: true });
   };
 
   useEffect(() => {
-    fetchPositions();
-    fetchUsers();
-  }, [searchTitle, searchStatus]);
+    if (composing) return;
+    const controller = new AbortController();
+    const delay = searchTitle && !immediateSearch.current ? 300 : 0;
+    immediateSearch.current = false;
+    const timer = window.setTimeout(async () => {
+      setLoading(true);
+      setListError('');
+      try {
+        const response = await request.get('/positions/page', {
+          params: { title: searchTitle.trim(), status: searchStatus, skip: (page - 1) * pageSize, limit: pageSize },
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        const lastPage = Math.max(1, Math.ceil(response.total / pageSize));
+        if (page > lastPage) {
+          setSearchParams((previous) => {
+            const next = new URLSearchParams(previous);
+            next.set('page', String(lastPage));
+            return next;
+          }, { replace: true });
+          return;
+        }
+        setData(response.items);
+        setTotal(response.total);
+        const ids = new Set(response.items.map((item: Position) => item.id));
+        setSelectedRowKeys((previous) => previous.filter((id) => ids.has(id)));
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setListError(getErrorMessage(error, '获取岗位列表失败，请重试'));
+          setData([]);
+          setTotal(0);
+          setSelectedRowKeys([]);
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }, delay);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [searchTitle, searchStatus, page, pageSize, refreshKey, composing, setSearchParams]);
+
+  useEffect(() => {
+    document.title = '岗位管理 · AI Interview';
+    const controller = new AbortController();
+    request.get('/auth/users', { signal: controller.signal }).then((users: HiringManager[]) => {
+      if (!controller.signal.aborted) setUsers(users);
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, []);
 
   const handleAdd = () => {
+    dirty.current = false;
     setEditingId(null);
+    setSaveError('');
     form.resetFields();
     form.setFieldsValue({ status: 'open', urgency: 'medium', position_type: 'full_time', headcount: 1 });
     setIsModalVisible(true);
   };
 
   const handleEdit = async (record: Position) => {
-    setEditingId(record.id);
     try {
       const res = await request.get(`/positions/${record.id}`);
+      form.resetFields();
       form.setFieldsValue(res);
+      dirty.current = false;
+      setEditingId(record.id);
+      setSaveError('');
       setIsModalVisible(true);
     } catch (error) {
-      message.error('获取岗位详情失败');
+      message.error(getErrorMessage(error, '获取岗位详情失败'));
     }
   };
 
@@ -130,7 +199,7 @@ const PositionsList: React.FC = () => {
       setViewingRecord(res);
       setIsDrawerVisible(true);
     } catch (error) {
-      message.error('获取岗位详情失败');
+      message.error(getErrorMessage(error, '获取岗位详情失败'));
     }
   };
 
@@ -138,7 +207,7 @@ const PositionsList: React.FC = () => {
     Modal.confirm({
       title: '确认删除',
       content: '确定要删除这个岗位吗？',
-      okText: '确认',
+      okText: '删除',
       cancelText: '取消',
       okType: 'danger',
       onOk: async () => {
@@ -147,54 +216,38 @@ const PositionsList: React.FC = () => {
           message.success('删除成功');
           fetchPositions();
         } catch (error) {
-          message.error('删除失败');
+          message.error(getErrorMessage(error, '删除失败'));
+          throw error;
         }
       },
     });
   };
 
-  const handleBatchDelete = () => {
-    if (selectedRowKeys.length === 0) {
-      message.warning('请先选择要删除的岗位');
-      return;
-    }
+  const handleBatch = (action: 'delete' | 'publish' | 'unpublish') => {
+    if (!selectedRowKeys.length || batchBusy) return;
+    const ids = [...selectedRowKeys];
+    const label = { delete: '删除', publish: '发布', unpublish: '下架' }[action];
     Modal.confirm({
-      title: '确认批量删除',
-      content: `确定要删除选中的 ${selectedRowKeys.length} 个岗位吗？`,
-      okText: '确认',
-      cancelText: '取消',
-      okType: 'danger',
+      title: `批量${label}岗位`,
+      content: `确定${label}选中的 ${ids.length} 个岗位吗？${action === 'delete' ? '有关联简历或题库的岗位无法删除。' : ''}`,
+      okText: label, cancelText: '取消', okType: action === 'delete' ? 'danger' : 'primary',
       onOk: async () => {
+        setBatchBusy(true);
+        setOperationError('');
         try {
-          await Promise.all(selectedRowKeys.map(id => request.delete(`/positions/${id}`)));
-          message.success(`成功删除 ${selectedRowKeys.length} 个岗位`);
-          setSelectedRowKeys([]);
+          const results = await Promise.allSettled(ids.map((id) => action === 'delete'
+            ? request.delete(`/positions/${id}`)
+            : request.put(`/positions/${id}`, { status: action === 'publish' ? 'published' : 'closed' })));
+          const failed = results.flatMap((result, index) => result.status === 'rejected' ? [{
+            id: ids[index], reason: getErrorMessage(result.reason, '操作失败'),
+          }] : []);
+          setSelectedRowKeys(failed.map((item) => item.id));
+          if (failed.length) {
+            setOperationError(`已${label} ${ids.length - failed.length} 个，${failed.length} 个失败：${[...new Set(failed.map((item) => item.reason))].join('；')}`);
+          } else message.success(`成功${label} ${ids.length} 个岗位`);
           fetchPositions();
-        } catch (error) {
-          message.error('批量删除失败');
-        }
-      },
-    });
-  };
-
-  const handleBatchPublish = (publish: boolean) => {
-    if (selectedRowKeys.length === 0) {
-      message.warning('请先选择要操作的岗位');
-      return;
-    }
-    Modal.confirm({
-      title: publish ? '确认批量发布' : '确认批量下架',
-      content: `确定要${publish ? '发布' : '下架'}选中的 ${selectedRowKeys.length} 个岗位吗？`,
-      okText: '确认',
-      cancelText: '取消',
-      onOk: async () => {
-        try {
-          await Promise.all(selectedRowKeys.map(id => request.put(`/positions/${id}`, { status: publish ? 'published' : 'closed' })));
-          message.success(`成功${publish ? '发布' : '下架'} ${selectedRowKeys.length} 个岗位`);
-          setSelectedRowKeys([]);
-          fetchPositions();
-        } catch (error) {
-          message.error('操作失败');
+        } finally {
+          setBatchBusy(false);
         }
       },
     });
@@ -206,7 +259,7 @@ const PositionsList: React.FC = () => {
       message.success(publish ? '岗位已发布' : '岗位已下架');
       fetchPositions();
     } catch (error) {
-      message.error('操作失败');
+      message.error(getErrorMessage(error, '操作失败'));
     }
   };
 
@@ -215,7 +268,7 @@ const PositionsList: React.FC = () => {
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(url).then(() => {
         message.success('岗位链接已复制');
-      });
+      }).catch(() => message.error('复制失败，请检查浏览器剪贴板权限'));
     } else {
       const textArea = document.createElement('textarea');
       textArea.value = url;
@@ -226,9 +279,9 @@ const PositionsList: React.FC = () => {
       textArea.focus();
       textArea.select();
       try {
-        document.execCommand('copy');
+        if (!document.execCommand('copy')) throw new Error('copy failed');
         message.success('岗位链接已复制');
-      } catch (err) {
+      } catch {
         message.error('复制失败');
       }
       document.body.removeChild(textArea);
@@ -249,28 +302,51 @@ const PositionsList: React.FC = () => {
   };
 
   const handleJDConfirm = (description: string, requirements: string) => {
+    dirty.current = true;
     form.setFieldsValue({
       description,
       requirements
     });
   };
 
+  const closeEditor = () => {
+    if (saving.current) return;
+    if (!dirty.current) { setIsModalVisible(false); return; }
+    Modal.confirm({
+      title: '放弃未保存的岗位内容？', content: '本次修改和已采纳的 JD 内容将丢失。',
+      autoFocusButton: 'cancel',
+      okText: '放弃修改', cancelText: '继续编辑', okType: 'danger',
+      onOk: () => { dirty.current = false; setIsModalVisible(false); },
+    });
+  };
+
   const handleOk = async () => {
+    if (saving.current) return;
+    saving.current = true;
     try {
-      const values = await form.validateFields();
-      setSubmitting(true);
-      if (editingId) {
-        await request.put(`/positions/${editingId}`, values);
-        message.success('更新成功');
-      } else {
-        await request.post('/positions', values);
-        message.success('创建成功');
+      let values: PositionFormValues;
+      try {
+        values = await form.validateFields();
+      } catch {
+        const firstError = form.getFieldsError().find((field) => field.errors.length);
+        if (firstError) form.scrollToField(firstError.name, { focus: true });
+        return;
       }
+      setSubmitting(true);
+      setSaveError('');
+      const payload = { ...values, title: values.title.trim(), hiring_manager_id: values.hiring_manager_id || null };
+      // Generation guidance belongs to the form draft.
+      delete payload.jd_guidance;
+      if (editingId) await request.put(`/positions/${editingId}`, payload);
+      else await request.post('/positions', payload);
+      message.success(editingId ? '岗位已保存' : '岗位已创建');
+      dirty.current = false;
       setIsModalVisible(false);
       fetchPositions();
     } catch (error) {
-      // Validation error
+      setSaveError(getErrorMessage(error, '保存岗位失败，请重试'));
     } finally {
+      saving.current = false;
       setSubmitting(false);
     }
   };
@@ -345,13 +421,15 @@ const PositionsList: React.FC = () => {
             color = 'processing';
             text = '招聘中';
         }
+        if (status === 'paused') { color = 'warning'; text = '已暂停'; }
+        if (status === 'cancelled') { color = 'default'; text = '已取消'; }
         return <Tag color={color} style={{ border: 'none' }}>{text}</Tag>;
       }
     },
     { 
       title: '招聘进度', 
       key: 'stats',
-      render: (_: any, record: Position) => renderStats(record.stats)
+      render: (_: unknown, record: Position) => renderStats(record.stats)
     },
     { 
       title: '创建时间', 
@@ -362,30 +440,31 @@ const PositionsList: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      render: (_: any, record: Position) => (
+      render: (_: unknown, record: Position) => (
         <Space size="small">
+          <PositionOperations id={record.id} title={record.title} status={record.status} onChange={fetchPositions} />
           <Tooltip title="查看详情">
-            <Button type="text" icon={<EyeOutlined style={{ color: '#3B82F6' }} />} onClick={() => handleView(record)} />
+            <Button aria-label={`查看 ${record.title}`} type="text" icon={<EyeOutlined style={{ color: '#3B82F6' }} />} onClick={() => handleView(record)} />
           </Tooltip>
           {record.status === 'published' ? (
              <Tooltip title="下架岗位">
-                <Button type="text" icon={<StopOutlined style={{ color: '#EF4444' }} />} onClick={() => handlePublish(record.id, false)} />
+                <Button aria-label={`下架 ${record.title}`} type="text" icon={<StopOutlined style={{ color: '#EF4444' }} />} onClick={() => handlePublish(record.id, false)} />
              </Tooltip>
-          ) : (
+          ) : record.status === 'open' ? (
              <Tooltip title="发布岗位">
-                <Button type="text" icon={<GlobalOutlined style={{ color: '#10B981' }} />} onClick={() => handlePublish(record.id, true)} />
+                <Button aria-label={`发布 ${record.title}`} type="text" icon={<GlobalOutlined style={{ color: '#10B981' }} />} onClick={() => handlePublish(record.id, true)} />
              </Tooltip>
-          )}
+          ) : null}
           {record.status === 'published' && (
              <Tooltip title="复制链接">
-                <Button type="text" icon={<CopyOutlined />} onClick={() => handleCopyLink(record.id)} />
+                <Button aria-label={`复制 ${record.title} 的链接`} type="text" icon={<CopyOutlined />} onClick={() => handleCopyLink(record.id)} />
              </Tooltip>
           )}
           <Tooltip title="编辑">
-            <Button type="text" icon={<EditOutlined style={{ color: '#64748B' }} />} onClick={() => handleEdit(record)} />
+            <Button aria-label={`编辑 ${record.title}`} type="text" icon={<EditOutlined style={{ color: '#64748B' }} />} onClick={() => handleEdit(record)} />
           </Tooltip>
           <Tooltip title="删除">
-            <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)} />
+            <Button aria-label={`删除 ${record.title}`} type="text" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)} />
           </Tooltip>
         </Space>
       ),
@@ -394,52 +473,70 @@ const PositionsList: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-        <div>
-          <Title level={2} style={{ margin: 0, fontWeight: 700 }}>岗位管理</Title>
-          <Text type="secondary">管理企业的招聘岗位信息</Text>
-        </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd} size="large" style={{ borderRadius: '8px' }}>新增岗位</Button>
-      </div>
-      
-      <div style={{ marginBottom: 24, padding: '24px', background: '#fff', borderRadius: '12px', border: '1px solid #E2E8F0', display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
+      <PageHeader title="岗位管理" description="维护岗位需求，发布招聘机会并跟进候选人进展。" actions={
+        <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>新增岗位</Button>
+      } />
+      {user?.role === "admin" && <div style={{ marginBottom: 16 }}><Link to="/positions/archive">已归档岗位</Link></div>}
+      <div className="filter-toolbar">
           <Input 
               placeholder="搜索岗位名称" 
-              prefix={<EyeOutlined style={{ color: '#94A3B8' }} />} 
+              prefix={<SearchOutlined style={{ color: 'var(--text-tertiary)' }} />}
               style={{ width: 300 }} 
               allowClear
-              onChange={(e) => setSearchTitle(e.target.value)}
+              value={searchTitle}
+              aria-label="搜索岗位名称"
+              onChange={(event) => updateFilters({ title: event.target.value })}
+              onCompositionStart={() => setComposing(true)}
+              onCompositionEnd={() => setComposing(false)}
+              onPressEnter={(event) => {
+                if (!event.nativeEvent.isComposing && !composing) { immediateSearch.current = true; fetchPositions(); }
+              }}
           />
           <Select
               placeholder="岗位状态"
               style={{ width: 150 }}
               allowClear
-              onChange={(value) => setSearchStatus(value)}
+              value={searchStatus}
+              aria-label="岗位状态"
+              onChange={(value) => updateFilters({ status: value })}
           >
               <Select.Option value="open">待发布</Select.Option>
               <Select.Option value="published">招聘中</Select.Option>
+              <Select.Option value="paused">已暂停</Select.Option>
+              <Select.Option value="cancelled">已取消</Select.Option>
               <Select.Option value="closed">已关闭</Select.Option>
           </Select>
           {selectedRowKeys.length > 0 && (
-            <Space>
+            <Space wrap>
               <span style={{ color: '#64748B' }}>已选 {selectedRowKeys.length} 项</span>
-              <Button onClick={() => handleBatchPublish(true)} type="primary" ghost>批量发布</Button>
-              <Button onClick={() => handleBatchPublish(false)}>批量下架</Button>
-              <Button danger onClick={handleBatchDelete}>批量删除</Button>
+              <Button disabled={batchBusy} onClick={() => handleBatch('publish')} type="primary" ghost>批量发布</Button>
+              <Button disabled={batchBusy} onClick={() => handleBatch('unpublish')}>批量下架</Button>
+              <Button danger disabled={batchBusy} onClick={() => handleBatch('delete')}>批量删除</Button>
               <Button onClick={() => setSelectedRowKeys([])}>取消选择</Button>
             </Space>
           )}
       </div>
       
-      <Table 
+      {listError && <Alert type="error" showIcon title={listError} style={{ marginBottom: 16 }} action={<Button onClick={fetchPositions}>重试</Button>} />}
+      {operationError && <Alert type="warning" showIcon title={operationError} style={{ marginBottom: 16 }} closable onClose={() => setOperationError('')} />}
+      <p className="table-overflow-hint">左右滑动表格查看完整岗位信息与操作</p>
+      <Table
         columns={columns} 
         dataSource={data} 
         loading={loading} 
         rowKey="id" 
-        pagination={{ pageSize: 10, showSizeChanger: true }}
+        scroll={{ x: 1000 }}
+        locale={{ emptyText: listError ? '岗位列表加载失败，请点击重试' : searchTitle || searchStatus ? '没有符合条件的岗位' : '暂无岗位，点击「新增岗位」开始创建' }}
+        pagination={{
+          current: page, pageSize, total, showSizeChanger: true,
+          showTotal: (count) => `共 ${count} 个岗位`,
+          onChange: (current, size) => updateFilters({ page: String(size !== pageSize ? 1 : current), pageSize: String(size) }),
+        }}
         rowSelection={{
           selectedRowKeys,
           onChange: setSelectedRowKeys,
+          getTitleCheckboxProps: () => ({ 'aria-label': '选择本页岗位', title: '选择本页岗位' }),
+          getCheckboxProps: (record) => ({ 'aria-label': `选择 ${record.title}`, title: record.title }),
         }}
       />
 
@@ -447,138 +544,31 @@ const PositionsList: React.FC = () => {
         title={editingId ? '编辑岗位' : '新增岗位'}
         open={isModalVisible}
         onOk={handleOk}
-        onCancel={() => setIsModalVisible(false)}
+        onCancel={closeEditor}
+        maskClosable={false}
+        cancelButtonProps={{ disabled: submitting }}
         confirmLoading={submitting}
         width={800}
         centered
-        destroyOnClose
+        destroyOnHidden
         okText="保存"
         cancelText="取消"
       >
+        {saveError && <Alert type="error" showIcon title={saveError} />}
         <Form
+          noValidate
+          scrollToFirstError
+          disabled={submitting}
+          onValuesChange={() => { dirty.current = true; }}
           form={form}
           layout="vertical"
           style={{ marginTop: 24 }}
         >
-          <Form.Item
-            name="title"
-            label="岗位名称"
-            rules={[{ required: true, message: '请输入岗位名称' }]}
-          >
-            <Input placeholder="例如：高级前端工程师" size="large" />
-          </Form.Item>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-            <Form.Item
-              name="department"
-              label="所属部门"
-            >
-              <Input placeholder="例如：研发部" size="large" />
-            </Form.Item>
-
-            <Form.Item
-              name="location"
-              label="工作地点"
-            >
-              <Input placeholder="例如：北京" size="large" />
-            </Form.Item>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-            <Form.Item
-              name="salary_range"
-              label="薪资范围"
-            >
-              <Input placeholder="例如：20k-30k" size="large" />
-            </Form.Item>
-
-            <Form.Item
-              name="headcount"
-              label="招聘人数"
-            >
-              <Input type="number" min={1} placeholder="1" size="large" />
-            </Form.Item>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-            <Form.Item
-              name="position_type"
-              label="岗位类型"
-            >
-              <Select size="large">
-                <Select.Option value="full_time">全职</Select.Option>
-                <Select.Option value="part_time">兼职</Select.Option>
-                <Select.Option value="contract">合同</Select.Option>
-                <Select.Option value="internship">实习</Select.Option>
-              </Select>
-            </Form.Item>
-
-            <Form.Item
-              name="urgency"
-              label="紧急程度"
-            >
-              <Select size="large">
-                <Select.Option value="low">低</Select.Option>
-                <Select.Option value="medium">中</Select.Option>
-                <Select.Option value="high">高</Select.Option>
-                <Select.Option value="urgent">紧急</Select.Option>
-              </Select>
-            </Form.Item>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-            <Form.Item
-              name="hiring_manager_id"
-              label="招聘负责人"
-            >
-              <Select size="large" allowClear placeholder="选择招聘负责人" showSearch optionFilterProp="children">
-                {users.map(user => (
-                  <Select.Option key={user.id} value={user.id}>{user.full_name} ({user.email})</Select.Option>
-                ))}
-              </Select>
-            </Form.Item>
-
- 
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <Text strong>岗位职责</Text>
-            <Button 
-              type="link" 
-              icon={<RobotOutlined />} 
-              onClick={handleOpenJDModal}
-            >
-              AI 生成 JD
-            </Button>
-          </div>
-          <Form.Item
-            name="description"
-            rules={[{ required: true, message: '请输入岗位职责' }]}
-          >
-            <Input.TextArea rows={4} placeholder="请输入详细的岗位职责描述" showCount maxLength={2000} style={{ padding: '8px 12px' }} />
-          </Form.Item>
-
-          <Form.Item
-            name="requirements"
-            label="任职要求"
-          >
-            <Input.TextArea rows={4} placeholder="请输入任职资格要求" showCount maxLength={2000} style={{ padding: '8px 12px' }} />
-          </Form.Item>
-
-          <Form.Item
-            name="status"
-            label="状态"
-          >
-            <Select size="large">
-              <Select.Option value="open">待发布</Select.Option>
-              <Select.Option value="published">招聘中</Select.Option>
-              <Select.Option value="closed">已关闭</Select.Option>
-            </Select>
-          </Form.Item>
+          <PositionFields users={users} onOpenJD={handleOpenJDModal} />
         </Form>
       </Modal>
 
-      <JDGeneratorModal
+      {jdModalVisible && <JDGeneratorModal
         visible={jdModalVisible}
         onCancel={() => setJdModalVisible(false)}
         onConfirm={handleJDConfirm}
@@ -586,7 +576,15 @@ const PositionsList: React.FC = () => {
         department={form.getFieldValue('department')}
         location={form.getFieldValue('location')}
         salary_range={form.getFieldValue('salary_range')}
-      />
+        position_type={form.getFieldValue('position_type')}
+        current_description={form.getFieldValue('description')}
+        current_requirements={form.getFieldValue('requirements')}
+        generationRequirements={jdGuidance}
+        onGenerationRequirementsChange={(value) => {
+          form.setFieldValue('jd_guidance', value);
+          dirty.current = true;
+        }}
+      />}
 
       <Drawer
         title="岗位详情"

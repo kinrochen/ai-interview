@@ -86,7 +86,8 @@ def confirm_interview_result_route(
     interview_id: UUID,
     confirm_data: ConfirmResult,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     db_interview = confirm_interview_result(db, interview_id, confirm_data.result, background_tasks)
     if not db_interview:

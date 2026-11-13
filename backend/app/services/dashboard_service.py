@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, and_, or_
 from app.models.models import (
-    Position, Resume, Interview, QuestionBank, User, InterviewPanel,
+    Position, Resume, Interview, QuestionBank, User, InterviewPanel, Offer,
     PositionStatus, ResumeStatus, InterviewStatus, InterviewResult, UserRole
 )
 from datetime import datetime, timedelta, timezone
@@ -10,6 +10,7 @@ import statistics
 
 def get_dashboard_stats(db: Session):
     active_positions_count = db.query(Position).filter(
+        Position.deleted_at.is_(None),
         (Position.status == PositionStatus.OPEN) | (Position.status == PositionStatus.PUBLISHED)
     ).count()
     
@@ -217,9 +218,7 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
         "percentage": round(offer_sent / total_resumes * 100, 1) if total_resumes > 0 else 0
     })
     
-    hired = db.query(Resume).filter(
-        Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
-    ).count()
+    hired = db.query(Offer.resume_id).filter(Offer.actual_onboarded_at.is_not(None)).distinct().count()
     stages.append({
         "stage": "hired",
         "stage_name": "入职",
@@ -236,7 +235,7 @@ def get_recruitment_funnel(db: Session) -> Dict[str, Any]:
     }
 
 def get_position_analytics(db: Session) -> Dict[str, Any]:
-    positions = db.query(Position).all()
+    positions = db.query(Position).filter(Position.deleted_at.is_(None)).all()
     position_analytics = []
     
     total_all_resumes = 0
@@ -266,9 +265,7 @@ def get_position_analytics(db: Session) -> Dict[str, Any]:
             ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED
         ])
         
-        hired = sum(1 for r in resumes if r.status in [
-            ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED
-        ])
+        hired = db.query(Offer.resume_id).filter(Offer.position_id == position.id, Offer.actual_onboarded_at.is_not(None)).distinct().count()
         total_all_hired += hired
         
         rejected = sum(1 for r in resumes if r.status == ResumeStatus.REJECTED)
@@ -394,7 +391,8 @@ def get_interviewer_analytics(db: Session) -> Dict[str, Any]:
     }
 
 def get_timeline_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
-    end_date = datetime.now(timezone.utc)
+    from app.services.recruitment_operations import COMPANY_TZ
+    end_date = datetime.now(COMPANY_TZ).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     start_date = end_date - timedelta(days=days)
     
     timeline_data = []
@@ -406,38 +404,36 @@ def get_timeline_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
     total_offers = 0
     total_hires = 0
     
-    while current <= end_date:
+    while current < end_date:
         date_str = current.strftime("%Y-%m-%d")
         next_day = current + timedelta(days=1)
+        current_utc = current.astimezone(timezone.utc)
+        next_day_utc = next_day.astimezone(timezone.utc)
         
         resumes_count = db.query(Resume).filter(
-            Resume.created_at >= current,
-            Resume.created_at < next_day
+            Resume.created_at >= current_utc,
+            Resume.created_at < next_day_utc
         ).count()
         
         interviews_scheduled = db.query(Interview).filter(
-            Interview.created_at >= current,
-            Interview.created_at < next_day
+            Interview.created_at >= current_utc,
+            Interview.created_at < next_day_utc
         ).count()
         
         interviews_completed = db.query(Interview).filter(
             Interview.status == InterviewStatus.COMPLETED,
-            Interview.created_at >= current,
-            Interview.created_at < next_day
+            Interview.created_at >= current_utc,
+            Interview.created_at < next_day_utc
         ).count()
         
         offers_sent = db.query(Resume).filter(
             Resume.status.in_([ResumeStatus.OFFER_PENDING, ResumeStatus.OFFER_ACCEPTED,
                               ResumeStatus.OFFER_REJECTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED]),
-            Resume.created_at >= current,
-            Resume.created_at < next_day
+            Resume.created_at >= current_utc,
+            Resume.created_at < next_day_utc
         ).count()
         
-        hires = db.query(Resume).filter(
-            Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED]),
-            Resume.created_at >= current,
-            Resume.created_at < next_day
-        ).count()
+        hires = db.query(Offer).filter(Offer.actual_onboarded_at >= current_utc, Offer.actual_onboarded_at < next_day_utc).count()
         
         timeline_data.append({
             "date": date_str,
@@ -475,6 +471,7 @@ def get_timeline_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
 def get_overview(db: Session) -> Dict[str, Any]:
     total_positions = db.query(Position).count()
     active_positions = db.query(Position).filter(
+        Position.deleted_at.is_(None),
         Position.status.in_([PositionStatus.OPEN, PositionStatus.PUBLISHED])
     ).count()
     
@@ -498,16 +495,17 @@ def get_overview(db: Session) -> Dict[str, Any]:
         Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
     ).count()
     
-    hired_resumes = db.query(Resume).filter(
-        Resume.status.in_([ResumeStatus.OFFER_ACCEPTED, ResumeStatus.ONBOARDING, ResumeStatus.COMPLETED])
-    ).all()
-    
+    hired_offers = db.query(Offer).filter(Offer.actual_onboarded_at.is_not(None)).all()
     time_to_hire_list = []
-    for resume in hired_resumes:
-        if resume.parsed_at:
-            parsed_at = resume.parsed_at.replace(tzinfo=timezone.utc) if resume.parsed_at.tzinfo is None else resume.parsed_at
-            days = (datetime.now(timezone.utc) - parsed_at).days
-            time_to_hire_list.append(days)
+    for offer in hired_offers:
+        if offer.resume and offer.resume.created_at:
+            applied = offer.resume.created_at
+            applied = applied.replace(tzinfo=timezone.utc) if applied.tzinfo is None else applied
+            onboarded = offer.actual_onboarded_at
+            onboarded = onboarded.replace(tzinfo=timezone.utc) if onboarded.tzinfo is None else onboarded
+            days = (onboarded - applied).total_seconds() / 86400
+            if days >= 0:
+                time_to_hire_list.append(days)
     avg_time_to_hire = round(statistics.mean(time_to_hire_list), 1) if time_to_hire_list else None
     
     match_scores = db.query(Resume.match_score).filter(Resume.match_score.isnot(None)).all()

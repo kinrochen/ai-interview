@@ -116,6 +116,9 @@ def get_offers(
             "status": offer.status.value,
             "sent_at": offer.sent_at,
             "accepted_at": offer.accepted_at,
+            "actual_onboarded_at": offer.actual_onboarded_at,
+            "departed_at": offer.departed_at,
+            "departure_reason": offer.departure_reason,
             "rejected_at": offer.rejected_at,
             "rejected_reason": offer.rejected_reason,
             "created_at": offer.created_at,
@@ -174,6 +177,9 @@ def get_offer(db: Session, offer_id: UUID) -> Optional[Dict[str, Any]]:
         "status": offer.status.value,
         "sent_at": offer.sent_at,
         "accepted_at": offer.accepted_at,
+            "actual_onboarded_at": offer.actual_onboarded_at,
+            "departed_at": offer.departed_at,
+            "departure_reason": offer.departure_reason,
         "rejected_at": offer.rejected_at,
         "rejected_reason": offer.rejected_reason,
         "created_at": offer.created_at,
@@ -342,6 +348,8 @@ def reopen_offer(db: Session, offer_id: UUID) -> Offer:
     if offer.status not in [OfferStatus.ACCEPTED, OfferStatus.REJECTED, OfferStatus.WITHDRAWN, OfferStatus.EXPIRED]:
         raise ValueError("当前状态不允许重新打开")
     
+    if offer.actual_onboarded_at:
+        raise ValueError("已登记实际入职，无法重新打开 Offer")
     old_status = offer.status.value
     offer.status = OfferStatus.SENT
     offer.token = secrets.token_urlsafe(32)

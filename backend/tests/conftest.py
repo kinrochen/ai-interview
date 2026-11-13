@@ -24,7 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.models.models import (
     Base, User, UserRole, Position, PositionStatus, PositionUrgency, PositionType,
     Resume, ResumeStatus, ScreeningResult, Interview, InterviewStatus, InterviewResult,
-    InterviewPanel, DepartmentReview, SystemConfig, CodingTest, CodingSubmission
+    InterviewPanel, DepartmentReview, SystemConfig, CodingTest, CodingSubmission, Offer,
+    RecruitmentEvent, RecruitmentSlot, RecruitmentQualityPolicy, InterviewAnalysisTask
 )
 from app.config.database import get_db
 from app.core.security import get_password_hash, create_access_token
@@ -63,6 +64,11 @@ def db() -> Generator[Session, None, None]:
         SystemConfig.__table__,
         CodingTest.__table__,
         CodingSubmission.__table__,
+        Offer.__table__,
+        RecruitmentSlot.__table__,
+        RecruitmentEvent.__table__,
+        RecruitmentQualityPolicy.__table__,
+        InterviewAnalysisTask.__table__,
     ]
 
     for table in tables_to_create:
@@ -85,12 +91,14 @@ def client(db: Session) -> Generator[TestClient, None, None]:
     覆盖 get_db 依赖，使用测试数据库
     """
     from fastapi import FastAPI
-    from app.routes import auth, positions, resumes, interviews, coding_tests, settings
+    from app.routes import auth, positions, resumes, interviews, coding_tests, settings, recruitment, interview_workflow
 
     # 创建测试应用（不导入 question_banks 路由，因为它使用了 ARRAY 类型）
     test_app = FastAPI()
 
     # 注册路由 - 与 main.py 保持一致，路由本身已有 prefix
+    test_app.include_router(recruitment.router, prefix="/api")
+    test_app.include_router(interview_workflow.router, prefix="/api")
     test_app.include_router(auth.router, prefix="/api")
     test_app.include_router(positions.router, prefix="/api")
     test_app.include_router(resumes.router, prefix="/api")

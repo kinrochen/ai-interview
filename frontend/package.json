@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test:jd": "node --test tests/jdStream.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

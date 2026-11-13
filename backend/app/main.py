@@ -78,6 +78,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from app.routes import recruitment, interview_workflow
+from app.services.interview_jobs import start_worker, stop_worker
+
+app.include_router(recruitment.router, prefix="/api")
+app.include_router(interview_workflow.router, prefix="/api")
+from app.services.resume_service import recover_resume_parses
+app.add_event_handler("startup", recover_resume_parses)
+app.add_event_handler("startup", start_worker)
+app.add_event_handler("shutdown", stop_worker)
+
 app.include_router(auth.router, prefix="/api")
 app.include_router(positions.router, prefix="/api")
 app.include_router(question_banks.router, prefix="/api")
@@ -109,3 +119,12 @@ init_builtin_workflows_on_startup()
 @app.get("/")
 def read_root():
     return {"message": "Welcome to AI Interview Assistant API"}
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="debug",
+    )

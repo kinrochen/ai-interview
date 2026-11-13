@@ -1,3 +1,4 @@
+import PageHeader from '../../components/PageHeader';
 import React, { useEffect, useState } from 'react';
 import { Table, Button, Space, message, Tag, Modal, Form, Input, Select, Upload, Tooltip, Typography, Drawer, Divider, Spin } from 'antd';
 import { PlusOutlined, UploadOutlined, DeleteOutlined, EyeOutlined, DownloadOutlined, FileWordOutlined, FileTextOutlined } from '@ant-design/icons';
@@ -432,24 +433,15 @@ const QuestionBanksList: React.FC = () => {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <Title level={2} style={{ margin: 0 }}>题库管理</Title>
-          <Text type="secondary">管理面试题目和知识库</Text>
-        </div>
-        <Space>
-          {selectedRowKeys.length > 0 && (
-            <>
-              <span style={{ color: '#64748B' }}>已选 {selectedRowKeys.length} 项</span>
-              <Button danger onClick={handleBatchDelete}>批量删除</Button>
-              <Button onClick={() => setSelectedRowKeys([])}>取消选择</Button>
-            </>
-          )}
-          <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd} size="large" style={{ borderRadius: '8px' }}>上传题库</Button>
-        </Space>
-      </div>
-      
-      <Table 
+      <PageHeader title="题库管理" description="沉淀专业题目与知识库，为每轮面试做好准备。" actions={
+        <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>上传题库</Button>
+      } />
+      {selectedRowKeys.length > 0 && <div className="filter-toolbar">
+        <span>已选 {selectedRowKeys.length} 项</span><Button danger onClick={handleBatchDelete}>批量删除</Button><Button onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+      </div>}
+      <p className="table-overflow-hint">左右滑动表格查看完整题库信息与操作</p>
+      <Table
+        scroll={{ x: 960 }}
         columns={columns} 
         dataSource={data} 
         loading={loading} 

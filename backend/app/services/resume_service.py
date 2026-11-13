@@ -17,12 +17,13 @@ import docx
 import PyPDF2
 import os
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import or_, and_, func
 import json
 
 def read_file_content(file_path: str) -> str:
     _, ext = os.path.splitext(file_path)
+    ext = ext.lower()
     content = ""
     try:
         if ext == '.docx':
@@ -32,7 +33,7 @@ def read_file_content(file_path: str) -> str:
             with open(file_path, 'rb') as f:
                 reader = PyPDF2.PdfReader(f)
                 for page in reader.pages:
-                    content += page.extract_text()
+                    content += (page.extract_text() or "") + "\n"
         elif ext in ('.txt', '.md', '.markdown'):
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
@@ -53,33 +54,29 @@ def process_resume_task(payload: Dict[str, Any]):
     db = SessionLocal()
     try:
         resume = db.query(Resume).filter(Resume.id == resume_id).first()
-        if not resume:
+        if not resume or resume.position_id != position_id or (payload.get("revision") and resume.parse_revision != payload["revision"]):
             return
+        revision = resume.parse_revision
         resume.parse_status = "processing"
         resume.parse_error = None
         db.commit()
 
         content = read_file_content(resume.file_path)
         if not content:
-            resume.parse_status = "failed"
-            resume.parse_error = "读取简历内容失败"
-            db.commit()
-            return
+            raise ValueError("读取简历内容失败，扫描件需要提供可提取文字的文件")
 
         resume.raw_text = content
 
         position = db.query(Position).filter(Position.id == position_id).first()
         if not position:
-            resume.parse_status = "failed"
-            resume.parse_error = "未找到对应岗位"
-            db.commit()
-            return
+            raise ValueError("未找到对应岗位")
 
         position_desc = f"{position.title}\n{position.description}\n{position.requirements}"
 
         # 获取其他相近岗位（状态为 OPEN 或 PUBLISHED，排除当前岗位）
         other_positions = db.query(Position).filter(
             Position.id != position_id,
+            Position.deleted_at.is_(None),
             Position.status.in_([PositionStatus.OPEN, PositionStatus.PUBLISHED])
         ).limit(5).all()
 
@@ -103,19 +100,26 @@ def process_resume_task(payload: Dict[str, Any]):
         parsed_data = analyze_resume(content, position_desc, other_positions_info)
 
         # 解析 AI 返回结果，兼容多种格式
-        if not parsed_data:
-            resume.parse_status = "failed"
-            resume.parse_error = "AI 解析失败"
-            db.commit()
+        if not isinstance(parsed_data, dict) or not parsed_data or parsed_data.get("error"):
+            raise ValueError("AI 解析失败，等待自动重试")
+
+        resume = db.query(Resume).filter_by(id=resume_id).populate_existing().with_for_update().first()
+        if not resume or resume.parse_revision != revision or resume.position_id != position_id:
             return
+        resume.raw_text = content
 
         # 提取 match_score（可能在顶层或在 main_job_evaluation/main_position_match 中）
         match_score = parsed_data.get("match_score")
         if match_score is None:
             main_eval = parsed_data.get("main_job_evaluation") or parsed_data.get("main_position_match") or {}
-            match_score = main_eval.get("match_score", 0)
-        if match_score is None:
-            match_score = 0
+            match_score = main_eval.get("match_score")
+        import math
+        if isinstance(match_score, bool):
+            raise ValueError("AI 匹配分数格式不正确")
+        numeric_score = float(match_score) if match_score is not None else float("nan")
+        if not math.isfinite(numeric_score) or not 0 <= numeric_score <= 100:
+            raise ValueError("AI 缺少有效的 0–100 分匹配结果，等待自动重试")
+        match_score = round(numeric_score)
 
         # 提取 screening_result
         screening_result = parsed_data.get("screening_result", ScreeningResult.PENDING)
@@ -143,18 +147,6 @@ def process_resume_task(payload: Dict[str, Any]):
             if not ai_review and parsed_data.get("recommendation"):
                 ai_review = "### 💡 综合建议\n" + parsed_data.get("recommendation", "")
 
-        # 提取联系方式
-        contact_info = parsed_data.get("contact_info", {})
-        if isinstance(contact_info, dict):
-            contact = contact_info.get("phone", "")
-            email = contact_info.get("email", "")
-        else:
-            contact = parsed_data.get("contact", "")
-            email = parsed_data.get("email", "")
-
-        # 提取姓名
-        candidate_name = parsed_data.get("candidate_name", "")
-
         # 提取其他岗位匹配信息
         other_matches = parsed_data.get("other_position_matches", [])
 
@@ -168,10 +160,14 @@ def process_resume_task(payload: Dict[str, Any]):
         if other_matches:
             resume.other_position_matches = other_matches
 
-        if not use_user_info:
-            resume.candidate_name = candidate_name or "未识别"
-            resume.contact = contact
-            resume.email = email or None
+        from app.services.resume_identity import resolve_identity
+        identity = resolve_identity(content, parsed_data, resume)
+        for field, value in identity.items():
+            setattr(resume, field, value)
+        contacts = parsed_data.get("contact_info")
+        contacts = contacts if isinstance(contacts, dict) else {}
+        resume.parsed_data = {**parsed_data, "candidate_name": identity["candidate_name"],
+                              "contact_info": {**contacts, "phone": identity["contact"], "email": identity["email"]}}
 
         resume.parse_status = "success"
         resume.parse_error = None
@@ -195,15 +191,9 @@ def process_resume_task(payload: Dict[str, Any]):
 
         db.commit()
 
-    except Exception as e:
-        try:
-            resume = db.query(Resume).filter(Resume.id == resume_id).first()
-            if resume:
-                resume.parse_status = "failed"
-                resume.parse_error = str(e)[:500]
-                db.commit()
-        finally:
-            pass
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -213,10 +203,9 @@ def on_resume_parse_failure(payload: Dict[str, Any], error: str):
     db = SessionLocal()
     try:
         resume = db.query(Resume).filter(Resume.id == resume_id).first()
-        if resume:
+        if resume and resume.position_id == payload["position_id"] and (not payload.get("revision") or resume.parse_revision == payload["revision"]):
             resume.parse_status = "failed"
             resume.parse_error = f"解析失败（重试后）: {error[:400]}"
-            resume.candidate_name = "解析失败"
             db.commit()
             print(f"[TaskQueue] Updated resume {resume_id} status to failed")
     except Exception as e:
@@ -225,7 +214,7 @@ def on_resume_parse_failure(payload: Dict[str, Any], error: str):
         db.close()
 
 
-def process_resume_background(resume_id: UUID, position_id: UUID, use_user_info: bool = False):
+def process_resume_background(resume_id: UUID, position_id: UUID, use_user_info: bool = False, revision: int | None = None):
     queue = get_task_queue()
     queue.submit(
         task_id=str(resume_id),
@@ -234,6 +223,7 @@ def process_resume_background(resume_id: UUID, position_id: UUID, use_user_info:
             "resume_id": resume_id,
             "position_id": position_id,
             "use_user_info": use_user_info,
+            "revision": revision,
         },
         callback=process_resume_task,
         on_failure=on_resume_parse_failure,
@@ -246,6 +236,11 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
     - 公开链接上传时，candidate_name/email/contact 由应聘者填写，解析时不会覆盖
     - 后台上传时，这些字段为空，解析时会从简历中提取
     """
+    position = db.get(Position, position_id)
+    if not position or position.deleted_at:
+        raise HTTPException(404, "岗位不存在")
+    if position.status in {PositionStatus.PAUSED, PositionStatus.CANCELLED, PositionStatus.CLOSED}:
+        raise HTTPException(409, "此岗位当前暂停接收简历")
     # 1. Save file
     file_path = save_upload_file(file, "resumes")
 
@@ -267,7 +262,7 @@ def upload_resume(db: Session, file: UploadFile, position_id: UUID, background_t
 
     # 3. Add background task - 传递是否使用用户填写的信息标记
     use_user_info = bool(candidate_name or email or contact)
-    background_tasks.add_task(process_resume_background, db_resume.id, position_id, use_user_info)
+    background_tasks.add_task(process_resume_background, db_resume.id, position_id, use_user_info, db_resume.parse_revision)
 
     return db_resume
 
@@ -285,6 +280,9 @@ def reparse_resume(db: Session, resume_id: UUID, background_tasks: BackgroundTas
     if not resume.position_id:
         raise HTTPException(status_code=400, detail="Resume missing position_id")
 
+    if resume.position and resume.recruitment_cycle != resume.position.recruitment_cycle:
+        resume.recruitment_cycle = resume.position.recruitment_cycle
+        resume.flow_started_at = datetime.now(timezone.utc)
     resume.parse_status = "processing"
     resume.parse_error = None
     resume.parsed_at = None
@@ -293,13 +291,11 @@ def reparse_resume(db: Session, resume_id: UUID, background_tasks: BackgroundTas
     resume.ai_review = None
     resume.screening_result = ScreeningResult.PENDING
     resume.status = ResumeStatus.PENDING_SCREENING
-    resume.candidate_name = "解析中..."
-    resume.contact = None
-    resume.email = None
+    resume.parse_revision = (resume.parse_revision or 1) + 1
     db.commit()
     db.refresh(resume)
 
-    background_tasks.add_task(process_resume_background, resume.id, resume.position_id)
+    background_tasks.add_task(process_resume_background, resume.id, resume.position_id, True, resume.parse_revision)
     return resume
 
 def get_resumes(db: Session, skip: int = 0, limit: int = 100, candidate_name: str = None, status: str = None, position_id: UUID = None, reviewer_id: UUID = None):
@@ -343,6 +339,9 @@ def delete_resume(db: Session, resume_id: UUID):
     db_resume = db.query(Resume).filter(Resume.id == resume_id).first()
     if not db_resume:
         return None
+
+    if db.query(Offer).filter(Offer.resume_id == resume_id, Offer.actual_onboarded_at.is_not(None)).first():
+        raise HTTPException(409, "候选人已有实际入职记录，请保留招聘名额与离职历史")
 
     # Get interview IDs for this resume
     interview_ids = [i.id for i in db.query(Interview).filter(Interview.resume_id == resume_id).all()]
@@ -771,6 +770,7 @@ def transfer_resume_position(db: Session, resume_id: UUID, new_position_id: UUID
 
     # 更新岗位
     old_position_id = resume.position_id
+    resume.parse_revision = (resume.parse_revision or 1) + 1
     resume.position_id = new_position_id
 
     # 清除之前的解析结果
@@ -798,6 +798,14 @@ def transfer_resume_position(db: Session, resume_id: UUID, new_position_id: UUID
     db.refresh(resume)
 
     # 触发重新解析
-    background_tasks.add_task(process_resume_background, resume.id, resume.position_id, False)
+    background_tasks.add_task(process_resume_background, resume.id, resume.position_id, True, resume.parse_revision)
 
     return resume
+
+
+def recover_resume_parses():
+    """Resume pending parse requests after a service restart."""
+    with SessionLocal() as db:
+        pending = db.query(Resume).filter_by(parse_status="processing").all()
+        for resume in pending:
+            process_resume_background(resume.id, resume.position_id, True, resume.parse_revision)

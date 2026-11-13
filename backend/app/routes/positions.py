@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.config.database import get_db
@@ -6,15 +6,15 @@ from app.schemas.position import (
     PositionCreate, PositionUpdate, PositionResponse,
     PositionWithStats, PositionStats, JDGenerateRequest,
     JDGenerateResponse, PositionDetailResponse, QuestionBankBrief,
-    JDChatRequest
+    JDChatRequest, PositionPage
 )
 from app.services.position_service import (
     create_position, get_positions, get_positions_with_stats,
     get_position, update_position, delete_position,
-    get_position_stats, get_linked_question_banks, generate_position_jd
+    get_position_stats, get_linked_question_banks, generate_position_jd, get_positions_page
 )
-from app.services.ai_service import generate_jd_stream, chat_jd_stream
-from app.models.models import User, UserRole
+from app.services.ai_service import generate_jd_stream, chat_jd_stream, JDGenerationError
+from app.models.models import User, UserRole, PositionStatus
 from app.core.security import check_roles
 from app.routes.auth import get_current_user
 from typing import List
@@ -48,18 +48,26 @@ def get_positions_route(
 def get_public_positions_route(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return get_positions(db, skip=skip, limit=limit, status="published")
 
+@router.get("/page", response_model=PositionPage)
+def get_positions_page_route(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=100),
+    status: PositionStatus = None,
+    title: str = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return get_positions_page(db, skip=skip, limit=limit, status=status, title=title)
+
 @router.post("/generate-jd", response_model=JDGenerateResponse)
 def generate_jd_route(
     request: JDGenerateRequest,
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
-    result = generate_position_jd(
-        title=request.title,
-        department=request.department,
-        location=request.location,
-        salary_range=request.salary_range,
-        keywords=request.keywords
-    )
+    try:
+        result = generate_position_jd(**request.model_dump())
+    except JDGenerationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return JDGenerateResponse(**result)
 
 @router.post("/generate-jd-stream")
@@ -68,14 +76,9 @@ def generate_jd_stream_route(
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return StreamingResponse(
-        generate_jd_stream(
-            title=request.title,
-            department=request.department,
-            location=request.location,
-            salary_range=request.salary_range,
-            keywords=request.keywords
-        ),
-        media_type="text/event-stream"
+        generate_jd_stream(**request.model_dump()),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 @router.post("/chat-jd-stream")
@@ -84,12 +87,9 @@ def chat_jd_stream_route(
     current_user: User = Depends(check_roles([UserRole.ADMIN, UserRole.HR]))
 ):
     return StreamingResponse(
-        chat_jd_stream(
-            messages=request.messages,
-            current_description=request.current_description,
-            current_requirements=request.current_requirements
-        ),
-        media_type="text/event-stream"
+        chat_jd_stream(**request.model_dump()),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 @router.get("/{position_id}", response_model=PositionDetailResponse)

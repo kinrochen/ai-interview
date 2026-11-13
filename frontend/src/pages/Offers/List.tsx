@@ -1,3 +1,5 @@
+import Onboarding from "../Recruitment/Onboarding";
+import PageHeader from '../../components/PageHeader';
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Card, Table, Button, Space, Tag, Modal, Form, Input, InputNumber, DatePicker,
@@ -14,12 +16,14 @@ import { useNavigate } from 'react-router-dom';
 import request from '../../utils/request';
 import dayjs from 'dayjs';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 const { TextArea } = Input;
 const { Option } = Select;
 const { RangePicker } = DatePicker;
 
 interface Offer {
+  actual_onboarded_at?: string | null;
+  departed_at?: string | null;
   id: string;
   resume_id: string;
   position_id: string;
@@ -81,6 +85,7 @@ const statusConfig: Record<string, { color: string; text: string }> = {
   rejected: { color: 'error', text: '已拒绝' },
   expired: { color: 'default', text: '已过期' },
   withdrawn: { color: 'default', text: '已撤回' },
+  departed: { color: 'default', text: '已离职' },
 };
 
 const OffersList: React.FC = () => {
@@ -440,6 +445,7 @@ const OffersList: React.FC = () => {
       key: 'action',
       render: (_: any, record: Offer) => (
         <Space size="small">
+          <Onboarding offer={record} onChange={fetchOffers} />
           <Tooltip title="查看详情">
             <Button type="text" icon={<EyeOutlined />} onClick={() => openDetailDrawer(record)} />
           </Tooltip>
@@ -460,7 +466,7 @@ const OffersList: React.FC = () => {
           {record.status === 'sent' && (
             <>
               <Tooltip title="接受">
-                <Button type="text" style={{ color: '#52c41a' }} icon={<CheckOutlined />} onClick={() => {
+                <Button type="text" style={{ color: 'var(--success-color)' }} icon={<CheckOutlined />} onClick={() => {
                   setCurrentOffer(record);
                   acceptForm.setFieldsValue({
                     accepted_salary: record.salary_monthly,
@@ -486,7 +492,7 @@ const OffersList: React.FC = () => {
               </Tooltip>
             </Popconfirm>
           )}
-          {['accepted', 'rejected', 'withdrawn', 'expired'].includes(record.status) && (
+          {!record.actual_onboarded_at && ['accepted', 'rejected', 'withdrawn', 'expired'].includes(record.status) && (
             <Popconfirm title="确定重新打开此Offer？重新打开后状态将变为已发送。" onConfirm={() => handleReopen(record.id)}>
               <Tooltip title="重新打开">
                 <Button type="text" icon={<RedoOutlined />} style={{ color: '#1890ff' }} />
@@ -505,13 +511,12 @@ const OffersList: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}>
-        <Title level={2} style={{ margin: 0 }}>Offer管理</Title>
-        <Text type="secondary">管理候选人录用通知</Text>
-      </div>
+      <PageHeader title="Offer 管理" description="准备录用通知，跟进发送、确认与接受进展。" actions={
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => { createForm.resetFields(); setCreateModalVisible(true); }}>新建 Offer</Button>
+      } />
 
       {stats && (
-        <Row gutter={16} style={{ marginBottom: 24 }}>
+        <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
           <Col xs={12} sm={6}>
             <Card>
               <Statistic title="总Offer数" value={stats.total_offers} />
@@ -519,12 +524,12 @@ const OffersList: React.FC = () => {
           </Col>
           <Col xs={12} sm={6}>
             <Card>
-              <Statistic title="待处理" value={stats.pending_offers + stats.sent_offers} valueStyle={{ color: '#faad14' }} />
+              <Statistic title="待处理" value={stats.pending_offers + stats.sent_offers} valueStyle={{ color: 'var(--warning-color)' }} />
             </Card>
           </Col>
           <Col xs={12} sm={6}>
             <Card>
-              <Statistic title="已接受" value={stats.accepted_offers} valueStyle={{ color: '#52c41a' }} />
+              <Statistic title="已接受" value={stats.accepted_offers} valueStyle={{ color: 'var(--success-color)' }} />
             </Card>
           </Col>
           <Col xs={12} sm={6}>
@@ -533,7 +538,7 @@ const OffersList: React.FC = () => {
                 title="接受率" 
                 value={stats.acceptance_rate} 
                 suffix="%" 
-                valueStyle={{ color: stats.acceptance_rate >= 50 ? '#52c41a' : '#ff4d4f' }}
+                valueStyle={{ color: stats.acceptance_rate >= 50 ? 'var(--success-color)' : 'var(--error-color)' }}
               />
             </Card>
           </Col>
@@ -544,6 +549,7 @@ const OffersList: React.FC = () => {
         <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
           <Space wrap>
             <Input.Search
+              aria-label="搜索候选人或岗位"
               placeholder="搜索候选人/岗位"
               allowClear
               style={{ width: 200 }}
@@ -551,6 +557,7 @@ const OffersList: React.FC = () => {
               onChange={(e) => !e.target.value && setSearchText('')}
             />
             <Select
+              aria-label="Offer 状态"
               placeholder="状态筛选"
               allowClear
               style={{ width: 120 }}
@@ -570,13 +577,12 @@ const OffersList: React.FC = () => {
               </>
             )}
           </Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => {
-            createForm.resetFields();
-            setCreateModalVisible(true);
-          }}>新建Offer</Button>
+
         </div>
 
+        <p className="table-overflow-hint">左右滑动表格查看完整录用通知与操作</p>
         <Table
+          scroll={{ x: 1100 }}
           columns={columns}
           dataSource={offers}
           rowKey="id"

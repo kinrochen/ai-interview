@@ -1,3 +1,4 @@
+import PageHeader from '../../components/PageHeader';
 import React, { useEffect, useState } from 'react';
 import { Table, Button, Space, message, Tag, Modal, Tooltip, Select, Input, Form, DatePicker, InputNumber, Row, Col, Checkbox, Typography } from 'antd';
 import { PlusOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined, StopOutlined, TeamOutlined } from '@ant-design/icons';
@@ -195,6 +196,7 @@ const InterviewsList: React.FC = () => {
         interviewer: '面试小组',
         panel_members: values.panel_members,
         interview_time: values.interview_time ? values.interview_time.toISOString() : new Date().toISOString(),
+        interview_end_time: values.interview_end_time?.toISOString() || null,
         question_bank_ids: values.question_bank_ids,
         question_count: values.question_count,
         round: values.round || 1,
@@ -440,9 +442,13 @@ const InterviewsList: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-        <Space>
+      <PageHeader title="面试管理" description="安排面试、记录评估，让团队判断有据可循。" actions={
+        canCancelInterview && <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenSelectResume}>安排面试</Button>
+      } />
+      <div className="filter-toolbar">
+        <Space wrap>
           <Select
+            aria-label="面试状态"
             placeholder="筛选状态"
             allowClear
             value={statusFilter}
@@ -463,11 +469,10 @@ const InterviewsList: React.FC = () => {
             </>
           )}
         </Space>
-        {(user?.role === 'admin' || user?.role === 'hr') && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenSelectResume}>安排面试</Button>
-        )}
       </div>
+      <p className="table-overflow-hint">左右滑动表格查看完整面试安排与操作</p>
       <Table
+        scroll={{ x: 1100 }}
         columns={columns}
         dataSource={filteredData}
         loading={loading}
@@ -665,6 +670,8 @@ const InterviewsList: React.FC = () => {
           >
             <DatePicker showTime style={{ width: '100%' }} size="large" />
           </Form.Item>
+
+          <Form.Item name="interview_end_time" label="预计结束时间" dependencies={["interview_time"]} rules={[({ getFieldValue }) => ({ validator(_, value) { const start = getFieldValue("interview_time"); return !value || (start && value.isAfter(start)) ? Promise.resolve() : Promise.reject(new Error("结束时间需要晚于开始时间")); } })]}><DatePicker showTime style={{ width: "100%" }} size="large" /></Form.Item>
 
           <Form.Item
             noStyle

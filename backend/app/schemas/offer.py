@@ -63,6 +63,9 @@ class OfferUpdate(BaseModel):
     status: Optional[str] = None
 
 class OfferResponse(BaseModel):
+    actual_onboarded_at: Optional[datetime] = None
+    departed_at: Optional[datetime] = None
+    departure_reason: Optional[str] = None
     id: UUID
     resume_id: UUID
     position_id: UUID

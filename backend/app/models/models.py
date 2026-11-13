@@ -1,7 +1,7 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, ForeignKey, Float
+from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, JSON, Integer, ForeignKey, Float, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from app.models.base import Base
 import enum
 from sqlalchemy.orm import relationship
@@ -27,6 +27,8 @@ class PositionStatus(str, enum.Enum):
     OPEN = "open"
     CLOSED = "closed"
     PUBLISHED = "published"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
 
 class PositionUrgency(str, enum.Enum):
     LOW = "low"
@@ -58,6 +60,9 @@ class Position(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
+    recruitment_cycle = Column(Integer, nullable=False, default=1, server_default="1")
+    cycle_started_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
     hiring_manager = relationship("User", foreign_keys=[hiring_manager_id])
 
 class QuestionCategory(str, enum.Enum):
@@ -107,6 +112,7 @@ class ResumeStatus(str, enum.Enum):
     ONBOARDING = "onboarding"
     COMPLETED = "completed"
     REJECTED = "rejected"
+    DEPARTED = "departed"
     WAITLIST = "waitlist"  # 备选
 
 class RejectReasonCategory(str, enum.Enum):
@@ -131,6 +137,7 @@ class Resume(Base):
     resume_markdown = Column(Text)
     parsed_data = Column(JSON)
     match_score = Column(Integer)
+    parse_revision = Column(Integer, nullable=False, default=1, server_default="1")
     parse_status = Column(String, default="processing")
     parse_error = Column(Text)
     parsed_at = Column(DateTime)
@@ -150,6 +157,8 @@ class Resume(Base):
 
     position = relationship("Position")
     rejector = relationship("User", foreign_keys=[rejected_by])
+    recruitment_cycle = Column(Integer, nullable=False, default=1, server_default="1")
+    flow_started_at = Column(DateTime(timezone=True), nullable=True)
     department_reviews = relationship("DepartmentReview", back_populates="resume")
 
 class ReviewRecommendation(str, enum.Enum):
@@ -219,6 +228,24 @@ class Interview(Base):
     status = Column(Enum(InterviewStatus, values_callable=lambda obj: [e.value for e in obj]), default=InterviewStatus.SCHEDULED)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    interview_end_time = Column(DateTime(timezone=True), nullable=True)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    lifecycle_state = Column(String(24), nullable=False, default="scheduled", server_default="scheduled")
+    recording_owner_id = Column(UUID(as_uuid=True), nullable=True)
+    recording_session_id = Column(UUID(as_uuid=True), nullable=True)
+    recording_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    recording_sessions = Column(JSON, nullable=True)
+    recording_chunks = Column(JSON, nullable=True)
+    recording_audio_path = Column(Text, nullable=True)
+    transcript_data = Column(JSON, nullable=True)
+    analysis_revision = Column(Integer, nullable=False, default=0, server_default="0")
+    ai_analysis_status = Column(String(24), nullable=False, default="pending", server_default="pending")
+    ai_analysis = Column(JSON, nullable=True)
+    ai_analysis_error = Column(Text, nullable=True)
+    legacy_completed = Column(Boolean, nullable=False, default=False, server_default="false")
+    final_decision_at = Column(DateTime(timezone=True), nullable=True)
+    final_decision_by = Column(UUID(as_uuid=True), nullable=True)
+    decision_history = Column(JSON, nullable=True)
     resume = relationship("Resume")
     position = relationship("Position")
     interviewer_user = relationship("User")
@@ -239,6 +266,14 @@ class InterviewPanel(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    interview_note = Column(Text, nullable=True)
+    note_supplements = Column(JSON, nullable=True)
+    human_review_history = Column(JSON, nullable=True)
+    human_scores = Column(JSON, nullable=True)
+    human_comments = Column(Text, nullable=True)
+    human_recommendation = Column(String(24), nullable=True)
+    human_review_submitted_at = Column(DateTime(timezone=True), nullable=True)
+    human_review_updated_at = Column(DateTime(timezone=True), nullable=True)
     interview = relationship("Interview", back_populates="panels")
     interviewer_user = relationship("User")
 
@@ -250,6 +285,7 @@ class OfferStatus(str, enum.Enum):
     REJECTED = "rejected"
     EXPIRED = "expired"
     WITHDRAWN = "withdrawn"
+    DEPARTED = "departed"
 
 class Offer(Base):
     __tablename__ = "offers"
@@ -295,6 +331,12 @@ class Offer(Base):
     
     resume = relationship("Resume")
     position = relationship("Position")
+    actual_onboarded_at = Column(DateTime(timezone=True), nullable=True)
+    onboarding_recorded_at = Column(DateTime(timezone=True), nullable=True)
+    onboarding_confirmed_by = Column(UUID(as_uuid=True), nullable=True)
+    departed_at = Column(DateTime(timezone=True), nullable=True)
+    departure_reason = Column(Text, nullable=True)
+    departure_released_hc = Column(Boolean, nullable=True)
     creator = relationship("User")
 
 class OfferTemplate(Base):
@@ -411,6 +453,10 @@ class SystemConfig(Base):
     llm_model = Column(String, default="qwen3.5-plus")
     llm_temperature = Column(Float, default=0.2)
     llm_max_tokens = Column(Integer)
+    asr_provider = Column(String(32), nullable=True)
+    asr_base_url = Column(Text, nullable=True)
+    asr_model = Column(String(128), nullable=True)
+    asr_api_key = Column(Text, nullable=True)
     # 邮件服务配置
     smtp_host = Column(String)
     smtp_port = Column(Integer, default=465)
@@ -424,3 +470,65 @@ class SystemConfig(Base):
     # 提示词配置（存储所有提示词的 JSON）
     prompt_configs = Column(JSON, default=dict)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RecruitmentSlot(Base):
+    __tablename__ = "recruitment_slots"
+    __table_args__ = (
+        UniqueConstraint("position_id", "cycle", "number", name="uq_recruitment_slot_number"),
+        UniqueConstraint("position_id", "cycle", "resume_id", name="uq_recruitment_slot_candidate"),
+    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    position_id = Column(UUID(as_uuid=True), ForeignKey("positions.id"), nullable=False, index=True)
+    cycle = Column(Integer, nullable=False, default=1)
+    number = Column(Integer, nullable=False)
+    status = Column(String(24), nullable=False, default="active")
+    resume_id = Column(UUID(as_uuid=True), ForeignKey("resumes.id"), nullable=True)
+    offer_id = Column(UUID(as_uuid=True), ForeignKey("offers.id"), nullable=True)
+    onboarded_at = Column(DateTime(timezone=True), nullable=True)
+    departed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class RecruitmentEvent(Base):
+    __tablename__ = "recruitment_events"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    position_id = Column(UUID(as_uuid=True), ForeignKey("positions.id", ondelete="SET NULL"), nullable=True, index=True)
+    resume_id = Column(UUID(as_uuid=True), ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True, index=True)
+    subject_type = Column(String(32), nullable=False)
+    subject_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    event_type = Column(String(64), nullable=False, index=True)
+    cycle = Column(Integer, nullable=False, default=1)
+    actor_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    occurred_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    details = Column(JSON, nullable=False, default=dict)
+
+
+class RecruitmentQualityPolicy(Base):
+    __tablename__ = "recruitment_quality_policies"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    position_id = Column(UUID(as_uuid=True), ForeignKey("positions.id"), nullable=True)
+    version = Column(Integer, nullable=False)
+    rules = Column(JSON, nullable=False)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class InterviewAnalysisTask(Base):
+    __tablename__ = "interview_analysis_tasks"
+    __table_args__ = (UniqueConstraint("interview_id", "revision", name="uq_interview_analysis_revision"),)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    interview_id = Column(UUID(as_uuid=True), ForeignKey("interviews.id", ondelete="CASCADE"), nullable=False, index=True)
+    revision = Column(Integer, nullable=False)
+    kind = Column(String(24), nullable=False)
+    status = Column(String(24), nullable=False, default="queued", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    claim_token = Column(String(64), nullable=True)
+    locked_at = Column(DateTime(timezone=True), nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+
+# Register history after all mapped classes exist.
+from app.services import operational_audit  # noqa: E402, F401

@@ -1,9 +1,11 @@
+import ASRSettingsCard from "../Recruitment/ASRSettings";
+import PageHeader from "../../components/PageHeader";
 import React, { useEffect, useState, useRef } from 'react';
 import { Button, Card, Form, Input, Space, Typography, message, Result, Switch, InputNumber, Divider, Tabs, Alert, Tag, Tooltip } from 'antd';
 import request from '../../utils/request';
 import { useAuth } from '../../contexts/AuthContext';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 type SystemSettings = {
   llm_base_url?: string | null;
@@ -340,7 +342,7 @@ const SystemSettingsPage: React.FC = () => {
     key,
     label: promptNames[key] || key,
     children: (
-      <Form form={promptForm} layout="vertical">
+      <Form noValidate form={promptForm} layout="vertical">
         <Alert
           message="注意：修改提示词后立即生效，请谨慎操作"
           type="warning"
@@ -397,10 +399,7 @@ const SystemSettingsPage: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 32 }}>
-        <Title level={2} style={{ margin: 0 }}>系统设置</Title>
-        <Text type="secondary">配置 AI 模型、邮件服务和提示词参数（仅管理员）</Text>
-      </div>
+      <PageHeader title="系统设置" description="配置 AI 模型、语音转写、邮件服务和提示词参数。" />
 
       <Card
         title="模型配置"
@@ -412,7 +411,7 @@ const SystemSettingsPage: React.FC = () => {
           </Space>
         }
       >
-        <Form form={form} layout="vertical" autoComplete="off">
+        <Form noValidate form={form} layout="vertical" autoComplete="off">
           <input type="text" name="username" autoComplete="username" style={{ display: 'none' }} />
           <input type="password" name="password" autoComplete="current-password" style={{ display: 'none' }} />
           <Form.Item name="llm_base_url" label="Base URL">
@@ -468,6 +467,8 @@ const SystemSettingsPage: React.FC = () => {
       </Card>
 
       <Divider />
+      <ASRSettingsCard />
+      <Divider />
 
       <Card
         title="邮件服务配置"
@@ -480,7 +481,7 @@ const SystemSettingsPage: React.FC = () => {
           </Space>
         }
       >
-        <Form form={mailForm} layout="vertical" autoComplete="off">
+        <Form noValidate form={mailForm} layout="vertical" autoComplete="off">
           <Form.Item
             name="mail_enabled"
             label="启用邮件通知"

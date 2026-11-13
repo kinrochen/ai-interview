@@ -27,6 +27,8 @@ def start_interview(db: Session, interview_id: UUID):
     db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
     if not db_interview:
         return None
+    if db_interview.ended_at or db_interview.final_decision_at:
+        raise HTTPException(409, "面试已经结束")
 
     if db_interview.status != InterviewStatus.SCHEDULED:
         raise HTTPException(
@@ -34,6 +36,7 @@ def start_interview(db: Session, interview_id: UUID):
             detail=f"Cannot start interview with status {db_interview.status.value}"
         )
 
+    db_interview.lifecycle_state = "in_progress"
     db_interview.status = InterviewStatus.IN_PROGRESS
     db_interview.started_at = datetime.utcnow()
     db.commit()
@@ -50,6 +53,8 @@ def submit_interview_panel_score(db: Session, interview_id: UUID, interviewer_id
     db_interview = db.query(Interview).get(interview_id)
     if not db_interview:
         return None, False
+    if db_interview.ended_at or db_interview.final_decision_at:
+        raise HTTPException(409, "请在面试工作区处理已结束面试的证据、评价与决策")
 
     if db_interview.status == InterviewStatus.SCHEDULED:
         db_interview.status = InterviewStatus.IN_PROGRESS
@@ -112,6 +117,9 @@ def aggregate_panel_scores(db: Session, interview_id: UUID, background_tasks: Ba
     """
     Aggregate scores from all panels to main interview record and generate AI evaluation.
     """
+    current = db.get(Interview, interview_id)
+    if current and (current.ended_at or current.final_decision_at):
+        raise HTTPException(409, "请使用面试工作区处理评价与决策")
     panels = db.query(InterviewPanel).filter(
         InterviewPanel.interview_id == interview_id,
         InterviewPanel.is_submitted == True
@@ -271,6 +279,14 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
     if not position:
         raise HTTPException(status_code=404, detail="Position not found")
 
+    if position.deleted_at or position.status.value in {"paused", "closed", "cancelled"}:
+        raise HTTPException(409, "岗位当前暂停安排新面试")
+    if resume.position_id != position.id or (resume.recruitment_cycle or 1) != (position.recruitment_cycle or 1):
+        raise HTTPException(409, "候选人与当前岗位招聘轮次不一致，请核对候选人流程")
+
+    if interview.interview_end_time and (not interview.interview_time or _normalize_dt_utc(interview.interview_end_time) <= _normalize_dt_utc(interview.interview_time)):
+        raise HTTPException(422, "面试结束时间需要晚于开始时间")
+
     interview_category = interview.interview_category or 'technical'
 
     db_interview = Interview(
@@ -278,6 +294,7 @@ def create_interview(db: Session, interview: InterviewCreate, background_tasks: 
         position_id=interview.position_id,
         interviewer=interview.interviewer,
         interview_time=_normalize_dt_utc(interview.interview_time),
+        interview_end_time=_normalize_dt_utc(interview.interview_end_time),
         questions=None if not interview.skip_ai_questions else [], # None means generating, [] means skipped
         status=InterviewStatus.SCHEDULED,
         panel_members=interview.panel_members,
@@ -469,10 +486,12 @@ def update_interview(db: Session, interview_id: UUID, interview: InterviewUpdate
     db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
     if not db_interview:
         return None
+    if db_interview.ended_at or db_interview.final_decision_at:
+        raise HTTPException(409, "请在面试工作区处理已结束面试的证据、评价与决策")
     
     update_data = interview.dict(exclude_unset=True)
     for key, value in update_data.items():
-        if key == "interview_time":
+        if key in {"interview_time", "interview_end_time"}:
             value = _normalize_dt_utc(value)
         setattr(db_interview, key, value)
     
@@ -481,9 +500,11 @@ def update_interview(db: Session, interview_id: UUID, interview: InterviewUpdate
     return db_interview
 
 def update_interview_questions(db: Session, interview_id: UUID, questions: list):
-    db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
+    db_interview = db.query(Interview).filter(Interview.id == interview_id).with_for_update().first()
     if not db_interview:
         return None
+    if db_interview.ended_at or db_interview.final_decision_at:
+        raise HTTPException(409, "请在面试工作区处理已结束面试的证据、评价与决策")
     
     db_interview.questions = questions
     db.commit()
@@ -494,6 +515,8 @@ def delete_interview(db: Session, interview_id: UUID):
     db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
     if not db_interview:
         return None
+    if db_interview.ended_at or db_interview.final_decision_at:
+        raise HTTPException(409, "请在面试工作区处理已结束面试的证据、评价与决策")
 
     db.delete(db_interview)
     db.commit()
@@ -514,6 +537,10 @@ def cancel_interview(db: Session, interview_id: UUID, reason: str = None):
             detail="Cannot cancel a completed interview."
         )
 
+    db_interview.lifecycle_state = "cancelled"
+    db_interview.analysis_revision = (db_interview.analysis_revision or 0) + 1
+    db_interview.recording_session_id = None
+    db_interview.recording_owner_id = None
     db_interview.status = InterviewStatus.CANCELLED
     if reason:
         existing_comments = db_interview.comments or {}
@@ -678,6 +705,8 @@ def confirm_interview_result(db: Session, interview_id: UUID, result: str, backg
     db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
     if not db_interview:
         return None
+    if db_interview.ended_at or db_interview.final_decision_at:
+        raise HTTPException(409, "请在面试工作区处理已结束面试的证据、评价与决策")
 
     # 更新结果和状态
     # result string comes from frontend as 'passed', 'rejected', 'waitlist', 'hired', 'next_round' (lowercase)
@@ -767,6 +796,8 @@ def submit_interview_score(db: Session, interview_id: UUID, interviewer_id: UUID
     db_interview = db.query(Interview).filter(Interview.id == interview_id).first()
     if not db_interview:
         return None
+    if db_interview.ended_at or db_interview.final_decision_at:
+        raise HTTPException(409, "面试已经结束")
 
     if db_interview.status == InterviewStatus.SCHEDULED:
         db_interview.status = InterviewStatus.IN_PROGRESS

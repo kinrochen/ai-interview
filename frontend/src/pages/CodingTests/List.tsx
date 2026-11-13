@@ -1,3 +1,4 @@
+import PageHeader from '../../components/PageHeader';
 import React, { useEffect, useState } from 'react';
 import { Button, Card, Form, Input, Modal, Select, Space, Table, Tag, message, Tooltip, Typography, Popconfirm, InputNumber, Divider, Tabs, Empty, Descriptions, Collapse, Radio, Checkbox } from 'antd';
 import { PlusOutlined, LinkOutlined, SendOutlined, StopOutlined, EyeOutlined, EditOutlined, ImportOutlined, DeleteOutlined, ArrowLeftOutlined, UserOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, CodeOutlined, FileTextOutlined, RobotOutlined, MinusCircleOutlined, SaveOutlined } from '@ant-design/icons';
@@ -599,21 +600,21 @@ const CodingTestsList: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
-        <Space>
-          {selectedRowKeys.length > 0 && (
-            <>
-              <span style={{ lineHeight: '32px' }}>已选 {selectedRowKeys.length} 项</span>
-              <Button onClick={handleBatchPublish}>批量发布</Button>
-              <Button danger onClick={handleBatchDelete}>批量删除</Button>
-              <Button onClick={() => setSelectedRowKeys([])}>取消选择</Button>
-            </>
-          )}
-        </Space>
+      <PageHeader title="笔试管理" description="创建在线编程测评，查看候选人的提交与评估结果。" actions={
         <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>创建笔试</Button>
-      </div>
+      } />
+      {selectedRowKeys.length > 0 && <div className="filter-toolbar">
+        <Space wrap>
+          <span>已选 {selectedRowKeys.length} 项</span>
+          <Button onClick={handleBatchPublish}>批量发布</Button>
+          <Button danger onClick={handleBatchDelete}>批量删除</Button>
+          <Button onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+        </Space>
+      </div>}
 
+      <p className="table-overflow-hint">左右滑动表格查看完整笔试信息与操作</p>
       <Table
+        scroll={{ x: 1100 }}
         columns={columns as any}
         dataSource={data}
         loading={loading}

@@ -1,0 +1,68 @@
+.jd-context {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 16px;
+  overflow-wrap: anywhere;
+}
+
+.jd-instructions,
+.jd-revision {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.jd-feedback {
+  margin-top: 16px;
+}
+
+.jd-status {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+}
+
+.jd-preview-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.jd-draft-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+/* Drafts remain still while people read or edit them. */
+.jd-assistant .ant-card:hover {
+  transform: none;
+  box-shadow: var(--shadow-sm);
+}
+
+.jd-markdown {
+  color: var(--text-primary);
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+
+.jd-markdown > :first-child { margin-top: 0; }
+.jd-markdown > :last-child { margin-bottom: 0; }
+.jd-markdown ul, .jd-markdown ol { padding-left: 20px; }
+
+.jd-revision {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.jd-revision > .ant-btn { align-self: flex-end; }
+.jd-history { max-height: 160px; overflow-y: auto; overflow-wrap: anywhere; }
+.jd-history p { margin: 0 0 8px; }
+
+@media (max-width: 640px) {
+  .jd-draft-grid { grid-template-columns: minmax(0, 1fr); }
+  .jd-assistant .ant-modal-footer .ant-space { justify-content: flex-end; }
+}

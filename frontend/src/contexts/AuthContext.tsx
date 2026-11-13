@@ -34,13 +34,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, []);
 
-  const fetchUser = async () => {
+  const fetchUser = async (throwOnError = false) => {
     try {
       const res = await request.get('/auth/me');
       setUser(res as any);
     } catch (error) {
       localStorage.removeItem('token');
       setUser(null);
+      if (throwOnError) throw error;
     } finally {
       setLoading(false);
     }
@@ -48,7 +49,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const login = async (token: string) => {
     localStorage.setItem('token', token);
-    await fetchUser();
+    await fetchUser(true);
   };
 
   const logout = () => {

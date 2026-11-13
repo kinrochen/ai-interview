@@ -1,5 +1,5 @@
-from pydantic import BaseModel, ConfigDict
-from typing import Optional, List
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Optional, List, Literal
 from uuid import UUID
 from datetime import datetime
 from app.models.models import PositionStatus, PositionUrgency, PositionType
@@ -14,7 +14,7 @@ class PositionBase(BaseModel):
     status: PositionStatus = PositionStatus.OPEN
     urgency: PositionUrgency = PositionUrgency.MEDIUM
     position_type: PositionType = PositionType.FULL_TIME
-    headcount: int = 1
+    headcount: int = Field(default=1, ge=1)
     hiring_manager_id: Optional[UUID] = None
 
 class PositionCreate(PositionBase):
@@ -30,10 +30,12 @@ class PositionUpdate(BaseModel):
     status: Optional[PositionStatus] = None
     urgency: Optional[PositionUrgency] = None
     position_type: Optional[PositionType] = None
-    headcount: Optional[int] = None
+    headcount: Optional[int] = Field(default=None, ge=1)
     hiring_manager_id: Optional[UUID] = None
 
 class PositionResponse(PositionBase):
+    recruitment_cycle: int = 1
+    deleted_at: Optional[datetime] = None
     id: UUID
     created_at: datetime
     updated_at: datetime
@@ -52,6 +54,10 @@ class PositionWithStats(PositionResponse):
     stats: PositionStats = PositionStats()
     hiring_manager_name: Optional[str] = None
 
+class PositionPage(BaseModel):
+    items: List[PositionWithStats]
+    total: int
+
 class PositionDetailResponse(PositionResponse):
     stats: PositionStats = PositionStats()
     hiring_manager_name: Optional[str] = None
@@ -64,22 +70,30 @@ class QuestionBankBrief(BaseModel):
     question_count: int = 0
     model_config = ConfigDict(from_attributes=True)
 
-class JDGenerateRequest(BaseModel):
-    title: str
-    department: Optional[str] = None
-    location: Optional[str] = None
-    salary_range: Optional[str] = None
-    keywords: Optional[str] = None
+class JDContext(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(default="", max_length=200)
+    department: Optional[str] = Field(default=None, max_length=200)
+    location: Optional[str] = Field(default=None, max_length=200)
+    salary_range: Optional[str] = Field(default=None, max_length=200)
+    keywords: Optional[str] = Field(default=None, max_length=2000)
+    position_type: Optional[PositionType] = None
+    current_description: str = Field(default="", max_length=2000)
+    current_requirements: str = Field(default="", max_length=2000)
+
+class JDGenerateRequest(JDContext):
+    title: str = Field(min_length=1, max_length=200)
 
 class JDGenerateResponse(BaseModel):
     description: str
     requirements: str
 
 class JDChatMessage(BaseModel):
-    role: str
-    content: str
+    model_config = ConfigDict(str_strip_whitespace=True)
 
-class JDChatRequest(BaseModel):
-    messages: List[JDChatMessage]
-    current_description: str = ""
-    current_requirements: str = ""
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=12000)
+
+class JDChatRequest(JDContext):
+    messages: List[JDChatMessage] = Field(min_length=1, max_length=40)

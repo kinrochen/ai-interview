@@ -1,0 +1,51 @@
+{
+  "profile": "product-admin",
+  "sourceRoots": [
+    "frontend/src/pages/Positions",
+    "frontend/src/components/JDGeneratorModal",
+    "frontend/src/components/PositionFields",
+    "frontend/src/components/Layout",
+    "frontend/src/components/PageHeader",
+    "frontend/src/components/RouteFeedback",
+    "frontend/src/pages/Login",
+    "frontend/src/pages/Dashboard",
+    "frontend/src/index.css",
+    "frontend/src/theme.ts",
+    "frontend/src/components/ProtectedRoute",
+    "frontend/src/router",
+    "frontend/src/main.tsx",
+    "frontend/src/pages/Recruitment",
+    "frontend/src/pages/Settings"
+  ],
+  "locale": "zh-CN",
+  "canonicalMap": "UX-CONTRACT.md",
+  "requiredCapabilities": [
+    "Table Selection",
+    "Select/Listbox",
+    "Form",
+    "Scrollbar",
+    "Toast",
+    "CRUD"
+  ],
+  "ownership": {
+    "Select/Listbox": "authored"
+  },
+  "requiredCommands": [
+    "unit",
+    "backend",
+    "build",
+    "e2e"
+  ],
+  "commands": {
+    "unit": "npm --prefix frontend run test:jd",
+    "backend": "cd backend && venv/bin/python -m pytest -q",
+    "build": "npm --prefix frontend run build",
+    "e2e": "node scripts/test-positions-ui.mjs && node scripts/test-recruitment-ui.mjs"
+  },
+  "evidence": {
+    "crudFullFlow": "scripts/test-positions-ui.mjs",
+    "failurePaths": "backend/tests/test_positions_ai.py",
+    "recruitmentFlows": "scripts/test-recruitment-ui.mjs",
+    "operationalFailures": "backend/tests/test_recruitment_features.py"
+  }
+}

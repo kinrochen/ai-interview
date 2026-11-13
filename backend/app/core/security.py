@@ -61,6 +61,7 @@ def get_current_user_dep(token: str = Depends(oauth2_scheme), db: Session = Depe
             status_code=status.HTTP_403_FORBIDDEN,
             detail="账户已被禁用，请联系管理员",
         )
+    db.info["actor_id"] = user.id
     return user
 
 def check_roles(required_roles: list[UserRole]):

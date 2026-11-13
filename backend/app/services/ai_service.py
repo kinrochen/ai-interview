@@ -1,4 +1,8 @@
-from openai import OpenAI
+from openai import (
+    OpenAI, APIConnectionError, APITimeoutError, AuthenticationError,
+    PermissionDeniedError, RateLimitError, BadRequestError,
+)
+import logging
 import os
 from typing import Dict, Any
 import json
@@ -303,148 +307,195 @@ def generate_coding_test_evaluation(
         print(f"Coding evaluation generation failed: {e}")
         return {"evaluation": "生成评价失败"}
 
-def generate_jd(
-    title: str,
-    department: str = "",
-    location: str = "",
-    salary_range: str = "",
-    keywords: str = ""
-) -> Dict[str, str]:
-    prompt_data = prompt_manager.get_prompt(
-        "generate_jd",
-        title=title,
-        department=department or "未指定",
-        location=location or "未指定",
-        salary_range=salary_range or "面议",
-        keywords=keywords or "无特殊要求"
-    )
-    
-    if not prompt_data.get("user"):
-        return {"description": "生成岗位描述失败", "requirements": "生成任职要求失败"}
-    
+# JD generation shares validation and stream handling across generation and revision.
+logger = logging.getLogger(__name__)
+JD_TEXT_LIMIT = 2000
+
+
+class JDGenerationError(ValueError):
+    """An actionable JD failure that is safe to show to the user."""
+
+
+def _parse_jd_content(content: str) -> Dict[str, str]:
+    if not isinstance(content, str) or not content.strip():
+        raise JDGenerationError("AI 未返回岗位内容，请重试或检查模型配置")
+    text = content.strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     try:
-        cfg = _get_llm_config()
-        extra = {"temperature": cfg["llm_temperature"]}
-        if cfg["llm_max_tokens"] is not None:
-            extra["max_tokens"] = cfg["llm_max_tokens"]
-        completion = _get_client().chat.completions.create(
-            model=cfg["llm_model"],
-            messages=[
-                {'role': 'system', 'content': prompt_data['system']},
-                {'role': 'user', 'content': prompt_data['user']}
-            ],
-            response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
-            **extra,
+        result = json.loads(text)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise JDGenerationError("AI 返回的内容格式不完整，请重新生成") from exc
+    if not isinstance(result, dict):
+        raise JDGenerationError("AI 返回的内容格式不正确，请重新生成")
+    draft = {}
+    for field, label in (("description", "岗位职责"), ("requirements", "任职要求")):
+        value = result.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise JDGenerationError(f"AI 返回的{label}为空或格式不正确，请重新生成")
+        if len(value.strip()) > JD_TEXT_LIMIT:
+            raise JDGenerationError(f"AI 返回的{label}超过 {JD_TEXT_LIMIT} 字，请补充精简要求后重试")
+        draft[field] = value.strip()
+    return draft
+
+
+def _jd_error_message(exc: Exception) -> str:
+    if isinstance(exc, JDGenerationError):
+        return str(exc)
+    if isinstance(exc, (AuthenticationError, PermissionDeniedError)):
+        return "AI 服务认证失败，请在系统设置中检查 API 密钥和模型权限"
+    if isinstance(exc, RateLimitError):
+        return "AI 服务请求受限或额度不足，请稍后重试或检查服务额度"
+    if isinstance(exc, APITimeoutError):
+        return "AI 生成超时，请稍后重试或精简要求"
+    if isinstance(exc, APIConnectionError):
+        return "无法连接 AI 服务，请检查网络和系统设置中的模型服务地址"
+    if isinstance(exc, BadRequestError):
+        return "AI 服务不接受当前请求，请检查模型是否支持 JSON 输出及生成参数"
+    return "AI 生成失败，请稍后重试；若持续失败，请检查系统设置中的模型配置"
+
+
+def _jd_messages(
+    title: str = "", department: str = "", location: str = "",
+    salary_range: str = "", keywords: str = "", position_type: str = None,
+    current_description: str = "", current_requirements: str = "",
+) -> list:
+    prompt = prompt_manager.get_prompt(
+        "generate_jd", title=title, department=department or "未指定",
+        location=location or "未指定", salary_range=salary_range or "未指定",
+        keywords=keywords or "无特殊要求",
+        position_type=position_type or "未指定",
+        current_description=current_description,
+        current_requirements=current_requirements,
+    )
+    if not prompt.get("user"):
+        raise JDGenerationError("JD 提示词未配置，请在系统设置中检查提示词")
+    context = {
+        "title": title, "department": department, "location": location,
+        "salary_range": salary_range, "position_type": position_type,
+        "additional_requirements": keywords,
+        "current_description": current_description,
+        "current_requirements": current_requirements,
+    }
+    return [
+        {"role": "system", "content": (prompt.get("system", "") + "\n"
+            "返回完整 JSON 对象，description 和 requirements 都必须是非空 Markdown 字符串，"
+            "每项不超过 2000 字。根据最新修改意见更新现有草稿，保留未要求修改的有效内容。"
+            "岗位类型、地点、薪资及补充要求以提供的信息为准，不得编造公司福利或薪资承诺。"
+            "未指定的学历和工作年限不要自行设为硬性门槛；不要添加与岗位能力无关的限制。")},
+        {"role": "user", "content": prompt["user"] + "\n\n岗位上下文与现有草稿：\n" + json.dumps(context, ensure_ascii=False)},
+    ]
+
+
+def _jd_completion_options() -> dict:
+    cfg = _get_llm_config()
+    if not cfg.get("llm_api_key"):
+        raise JDGenerationError("尚未配置 AI 服务，请先在系统设置中填写模型和 API 密钥")
+    options = {
+        "model": cfg["llm_model"], "temperature": cfg["llm_temperature"],
+        "response_format": {"type": "json_object"},
+        "extra_body": {"enable_thinking": False} if cfg.get("llm_provider") == "dashscope" else {},
+    }
+    if cfg.get("llm_max_tokens") is not None:
+        options["max_tokens"] = cfg["llm_max_tokens"]
+    return options
+
+
+def _check_jd_finish_reason(reason: str) -> None:
+    if reason == "length":
+        raise JDGenerationError("AI 输出被截断，请提高系统设置中的最大输出长度，或精简生成要求后重试")
+    if reason == "content_filter":
+        raise JDGenerationError("AI 服务未能返回该内容，请调整岗位要求后重试")
+
+
+def generate_jd(
+    title: str, department: str = "", location: str = "",
+    salary_range: str = "", keywords: str = "", position_type: str = None,
+    current_description: str = "", current_requirements: str = "",
+) -> Dict[str, str]:
+    try:
+        messages = _jd_messages(title, department, location, salary_range, keywords,
+                                position_type, current_description, current_requirements)
+        options = _jd_completion_options()
+        completion = _get_client().with_options(timeout=90, max_retries=0).chat.completions.create(
+            messages=messages, **options,
         )
-        result = json.loads(completion.choices[0].message.content)
-        return {
-            "description": result.get("description", ""),
-            "requirements": result.get("requirements", "")
-        }
-    except Exception as e:
-        print(f"JD generation failed: {e}")
-        return {"description": "生成岗位描述失败", "requirements": "生成任职要求失败"}
+        if not completion.choices:
+            raise JDGenerationError("AI 未返回岗位内容，请重试或检查模型配置")
+        choice = completion.choices[0]
+        _check_jd_finish_reason(choice.finish_reason)
+        return _parse_jd_content(choice.message.content)
+    except Exception as exc:
+        logger.exception("JD generation failed")
+        raise JDGenerationError(_jd_error_message(exc)) from exc
+
+
+def _jd_event(data: dict) -> str:
+    return "data: " + json.dumps(data, ensure_ascii=False) + "\n\n"
+
+
+def _stream_jd(messages: list):
+    stream = None
+    try:
+        options = _jd_completion_options()
+        stream = _get_client().with_options(timeout=90, max_retries=0).chat.completions.create(
+            messages=messages, stream=True, **options,
+        )
+        parts = []
+        for chunk in stream:
+            # Usage-only and heartbeat chunks may legitimately have no choices.
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            _check_jd_finish_reason(choice.finish_reason)
+            content = choice.delta.content if choice.delta else None
+            if isinstance(content, str) and content:
+                parts.append(content)
+                yield _jd_event({"content": content})
+        result = _parse_jd_content("".join(parts))
+        yield _jd_event({"done": True, **result})
+    except Exception as exc:
+        logger.exception("JD stream failed")
+        yield _jd_event({"error": _jd_error_message(exc)})
+    finally:
+        # GeneratorExit on disconnect must also release the upstream connection.
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                logger.warning("Failed to close JD upstream stream", exc_info=True)
+
 
 def generate_jd_stream(
-    title: str,
-    department: str = "",
-    location: str = "",
-    salary_range: str = "",
-    keywords: str = ""
+    title: str, department: str = "", location: str = "",
+    salary_range: str = "", keywords: str = "", position_type: str = None,
+    current_description: str = "", current_requirements: str = "",
 ):
-    prompt_data = prompt_manager.get_prompt(
-        "generate_jd",
-        title=title,
-        department=department or "未指定",
-        location=location or "未指定",
-        salary_range=salary_range or "面议",
-        keywords=keywords or "无特殊要求"
-    )
-    
-    if not prompt_data.get("user"):
-        yield "data: " + json.dumps({"error": "生成失败，请检查配置"}, ensure_ascii=False) + "\n\n"
-        return
-    
     try:
-        cfg = _get_llm_config()
-        extra = {"temperature": cfg["llm_temperature"], "stream": True}
-        if cfg["llm_max_tokens"] is not None:
-            extra["max_tokens"] = cfg["llm_max_tokens"]
-        
-        stream = _get_client().chat.completions.create(
-            model=cfg["llm_model"],
-            messages=[
-                {'role': 'system', 'content': prompt_data['system']},
-                {'role': 'user', 'content': prompt_data['user']}
-            ],
-            response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
-            **extra,
-        )
-        
-        for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield "data: " + json.dumps({"content": chunk.choices[0].delta.content}, ensure_ascii=False) + "\n\n"
-        
-        yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
-    except Exception as e:
-        print(f"JD stream generation failed: {e}")
-        yield "data: " + json.dumps({"error": str(e)}, ensure_ascii=False) + "\n\n"
+        messages = _jd_messages(title, department, location, salary_range, keywords,
+                                position_type, current_description, current_requirements)
+    except Exception as exc:
+        logger.exception("JD prompt preparation failed")
+        yield _jd_event({"error": _jd_error_message(exc)})
+        return
+    yield from _stream_jd(messages)
+
 
 def chat_jd_stream(
-    messages: list,
-    current_description: str = "",
-    current_requirements: str = ""
+    messages: list, current_description: str = "", current_requirements: str = "",
+    title: str = "", department: str = "", location: str = "",
+    salary_range: str = "", keywords: str = "", position_type: str = None,
 ):
-    system_prompt = """你是一个专业的招聘专家，擅长撰写和优化岗位描述（JD）。
-
-当前岗位描述内容：
-【岗位职责】
-""" + current_description + """
-
-【任职要求】
-""" + current_requirements + """
-
-你的任务是帮助用户优化和完善岗位描述。请根据用户的反馈进行修改，并返回完整的更新后的内容。
-
-返回格式必须是 JSON：
-{
-  "description": "更新后的岗位职责（Markdown格式）",
-  "requirements": "更新后的任职要求（Markdown格式）"
-}
-
-注意：
-1. 保持专业性和准确性
-2. 如果用户只是提问而不需要修改，请解释相关内容，但仍然返回当前的 description 和 requirements
-3. 修改时要保持整体结构完整，不要只返回部分内容"""
-
     try:
-        cfg = _get_llm_config()
-        extra = {"temperature": cfg["llm_temperature"], "stream": True}
-        if cfg["llm_max_tokens"] is not None:
-            extra["max_tokens"] = cfg["llm_max_tokens"]
-        
-        formatted_messages = [{"role": "system", "content": system_prompt}]
-        for msg in messages:
-            formatted_messages.append({"role": msg["role"], "content": msg["content"]})
-        
-        stream = _get_client().chat.completions.create(
-            model=cfg["llm_model"],
-            messages=formatted_messages,
-            response_format={"type": "json_object"},
-            extra_body=_get_extra_body(),
-            **extra,
-        )
-        
-        for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield "data: " + json.dumps({"content": chunk.choices[0].delta.content}, ensure_ascii=False) + "\n\n"
-        
-        yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
-    except Exception as e:
-        print(f"JD chat stream failed: {e}")
-        yield "data: " + json.dumps({"error": str(e)}, ensure_ascii=False) + "\n\n"
+        formatted = _jd_messages(title, department, location, salary_range, keywords,
+                                 position_type, current_description, current_requirements)
+        formatted[0]["content"] += "\n按用户最新意见返回完整的更新结果；只提问时仍保留当前草稿。"
+        formatted.extend(messages)
+    except Exception as exc:
+        logger.exception("JD revision preparation failed")
+        yield _jd_event({"error": _jd_error_message(exc)})
+        return
+    yield from _stream_jd(formatted)
 
 
 def generate_text(prompt: str) -> str:

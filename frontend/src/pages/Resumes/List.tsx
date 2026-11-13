@@ -1,10 +1,11 @@
+import PageHeader from '../../components/PageHeader';
 import React, { useEffect, useState, useRef } from 'react';
 import { Table, Button, Space, message, Tag, Modal, Tooltip, Typography, Form, Select, Upload, Input, DatePicker, InputNumber, Card, Row, Col, Checkbox } from 'antd';
 import { PlusOutlined, EyeOutlined, TeamOutlined, DeleteOutlined, UploadOutlined, ReloadOutlined, CloseCircleOutlined, SearchOutlined, UndoOutlined, SolutionOutlined, SyncOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useNavigate } from 'react-router-dom';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -532,7 +533,8 @@ const ResumesList: React.FC = () => {
           case 'offer_accepted': color = 'success'; text = '已接受Offer'; break;
           case 'offer_rejected': color = 'error'; text = '已拒绝Offer'; break;
           case 'waitlist': color = 'gold'; text = '备选'; break;
-          case 'completed': color = 'success'; text = '已完成'; break;
+          case 'departed': color = 'default'; text = '已离职'; break;
+          case 'completed': color = 'success'; text = '已入职'; break;
           case 'rejected': color = 'error'; text = '已淘汰'; break;
           case 'hired': color = 'success'; text = '已录用'; break;
           default: break;
@@ -609,16 +611,10 @@ const ResumesList: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-        <div>
-          <Title level={2} style={{ margin: 0, fontWeight: 700 }}>
-            {user?.role === 'interviewer' ? '我的待评审' : '简历管理'}
-          </Title>
-          <Text type="secondary">
-            {user?.role === 'interviewer' ? '被指派给您的待评审简历' : '管理候选人简历及面试流程'}
-          </Text>
-        </div>
-        <Space>
+      <PageHeader title={user?.role === 'interviewer' ? '我的待评审' : '简历管理'}
+        description={user?.role === 'interviewer' ? '查看被指派给您的候选人简历，完成专业评审。' : '集中管理候选人，从简历解析到面试评估。'}
+        actions={
+          <Space wrap>
           {user?.role !== 'interviewer' && (
             <>
               <Button icon={pollingEnabled ? <SyncOutlined spin /> : <ReloadOutlined />} onClick={() => fetchResumes()}>
@@ -633,14 +629,16 @@ const ResumesList: React.FC = () => {
             </Button>
           )}
         </Space>
-      </div>
+        } />
 
       {user?.role !== 'interviewer' && (
-        <Card style={{ marginBottom: 24, borderRadius: '8px' }} bodyStyle={{ padding: '24px' }}>
-          <Form layout="inline">
+        <div className="filter-toolbar">
+          <Form layout="inline" noValidate>
             <Form.Item label="候选人">
               <Input
                 placeholder="请输入姓名"
+                aria-label="候选人姓名"
+                onPressEnter={(event) => { if (!event.nativeEvent.isComposing) handleSearch(); }}
                 value={searchName}
                 onChange={e => setSearchName(e.target.value)}
                 style={{ width: 200 }}
@@ -650,6 +648,7 @@ const ResumesList: React.FC = () => {
             <Form.Item label="状态">
               <Select
                 placeholder="请选择状态"
+                aria-label="简历状态"
                 value={searchStatus}
                 onChange={val => setSearchStatus(val)}
                 style={{ width: 150 }}
@@ -667,7 +666,8 @@ const ResumesList: React.FC = () => {
                 <Select.Option value="offer_accepted">已接受Offer</Select.Option>
                 <Select.Option value="offer_rejected">已拒绝Offer</Select.Option>
                 <Select.Option value="waitlist">备选</Select.Option>
-                <Select.Option value="completed">已完成</Select.Option>
+                <Select.Option value="completed">已入职</Select.Option>
+                <Select.Option value="departed">已离职</Select.Option>
                 <Select.Option value="rejected">已淘汰</Select.Option>
                 <Select.Option value="hired">已录用</Select.Option>
               </Select>
@@ -695,10 +695,12 @@ const ResumesList: React.FC = () => {
               </Space>
             </Form.Item>
           </Form>
-        </Card>
+        </div>
       )}
 
+      <p className="table-overflow-hint">左右滑动表格查看完整候选人信息与操作</p>
       <Table 
+        scroll={{ x: 1200 }}
         columns={columns} 
         dataSource={data} 
         loading={loading} 

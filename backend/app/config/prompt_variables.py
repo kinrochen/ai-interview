@@ -42,6 +42,9 @@ PROMPT_VARIABLES = {
         {"name": "location", "description": "工作地点"},
         {"name": "salary_range", "description": "薪资范围"},
         {"name": "keywords", "description": "关键词/特殊要求"},
+        {"name": "position_type", "description": "岗位类型"},
+        {"name": "current_description", "description": "现有岗位职责草稿"},
+        {"name": "current_requirements", "description": "现有任职要求草稿"},
     ],
 }
 
@@ -71,4 +74,7 @@ ALL_VARIABLES = {
     "location": "工作地点",
     "salary_range": "薪资范围",
     "keywords": "关键词/特殊要求",
+    "position_type": "岗位类型",
+    "current_description": "现有岗位职责草稿",
+    "current_requirements": "现有任职要求草稿",
 }
